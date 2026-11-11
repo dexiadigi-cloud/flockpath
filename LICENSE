@@ -1,0 +1,46 @@
+Flockpath - License Summary
+==============================
+
+Original code in this repository (app, components, lib, scripts):
+  Copyright (c) 2026 Jeremiah Lee. Released under the MIT License:
+
+  Permission is hereby granted, free of charge, to any person obtaining
+  a copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be
+  included in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+What this MIT license does NOT cover:
+  - The Flockpath name, wordmark, and logo. These are trademarks
+    of Jeremiah Lee / Dexia Digi. The MIT license grants rights
+    in the code only; it does not grant any right to use the
+    Flockpath name or logo, and a fork or derivative must use
+    its own name and branding. Use the name only to say, truthfully,
+    that a work is based on or compatible with Flockpath, never
+    in a way that suggests endorsement by Dexia Digi.
+  - Scripture text itself, which is public domain (see OPEN-SOURCE.md).
+    The Berean Standard Bible text used by Flockpath was dedicated
+    to the public domain (CC0) by its translators, not by this
+    project. An older sample pack still carries public-domain WEB
+    text, also not by this project.
+  - Hymn words, tunes, and settings, which are public domain in the
+    US per item, verified in Hymn Desk, not by this project.
+  - Study sources (commentaries, devotionals, dictionaries), which
+    are public domain except the lexicon/interlinear data listed
+    in OPEN-SOURCE.md as CC BY 4.0, with attribution there.
+  - Third-party libraries, which keep their own licenses, listed
+    in OPEN-SOURCE.md. All of them are free, open-source licenses
+    (MIT, Apache 2.0, BSD-3-Clause, or SIL OFL for fonts).

@@ -1,0 +1,22 @@
+# runtime state - data/auth.db holds a live API key in plain text
+data/*
+!data/bsb-*.json
+# generated
+node_modules/
+.next/
+.venv/
+__pycache__/
+# models - too big for GitHub, download separately
+models/
+# test and video artifacts
+output/
+demo-video/
+# Typst binaries - install Typst 0.15.1 instead
+tools/typst-*
+tools/*.tar.xz
+# test PDFs
+public/pack-*.pdf
+# local
+*.log
+.DS_Store
+.env*
