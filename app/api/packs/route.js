@@ -33,6 +33,11 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "A locked pack and its lock hash are required." }, { status: 400 });
   }
   let store = {};
+  // Nov 11, 2026, v53: the pack's translation picks the store
+  // files, so a Spanish pack verifies against the Spanish
+  // store, not BSB. A legacy pack carries no translation and
+  // verifies against BSB, as before.
+  const translation = (body.pack?.translation === "rv1909" || body.pack?.translation === "spabes") ? body.pack.translation : "bsb";
   try {
     // Nov 5, 2026, round-3 cover note: the pastor-note verse
     // may cite a book outside the pack's five days, so its
@@ -41,14 +46,14 @@ export async function POST(request) {
     const refs = [body.pack.memoryVerse?.reference, body.pack.pastorNote?.verse?.reference, ...(body.pack.adultDevotionals ?? []).map((d) => d.scripture?.reference)].filter(Boolean);
     const books = [...new Set(refs.map((r) => String(r).split(" ")[0]))];
     for (const book of books) {
-      const f = path.join(process.cwd(), "data", `bsb-${book}.json`);
+      const f = path.join(process.cwd(), "data", `${translation}-${book}.json`);
       if (!existsSync(f)) return Response.json({ ok: false, error: `Cannot verify this pack: no verse store for ${book}.` }, { status: 400 });
       Object.assign(store, JSON.parse(readFileSync(f, "utf-8")));
     }
   } catch {
     return Response.json({ ok: false, error: "Cannot verify this pack." }, { status: 400 });
   }
-  const verified = lockPack(body.pack, store, "bsb");
+  const verified = lockPack(body.pack, store, translation);
   if (!verified.ok) return Response.json({ ok: false, error: `Pack does not verify: ${verified.errors.join(" ")}` }, { status: 400 });
   if (verified.pack.lockHash !== body.lockHash) return Response.json({ ok: false, error: "Lock hash does not match the pack." }, { status: 400 });
   if (verified.pack.id !== body.id) return Response.json({ ok: false, error: "Pack id does not match the entry id." }, { status: 400 });

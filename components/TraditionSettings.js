@@ -43,7 +43,7 @@ export default function TraditionSettings() {
   }
 
   return (
-    <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 24 }}>
+    <section className="fp-card">
       <h2 style={{ marginTop: 0 }}>My tradition (optional)</h2>
       <p>Your packs will put your tradition&apos;s voices first. Everything else stays available and labeled in review. Change it any time; it affects future packs, never packs already locked.</p>
       <form onSubmit={save}>

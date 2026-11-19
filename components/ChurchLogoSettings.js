@@ -74,7 +74,7 @@ export default function ChurchLogoSettings() {
   }
 
   return (
-    <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 24 }}>
+    <section className="fp-card">
       <h2 style={{ marginTop: 0 }}>Church logo (optional)</h2>
       <p>Your church&apos;s mark prints above the title on future pack covers, so families see your church first and Flockpath second. PNG or JPEG, under 2 MB.</p>
       {current && (

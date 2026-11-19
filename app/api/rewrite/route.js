@@ -40,6 +40,10 @@ export async function POST(request) {
   const text = String(body.body ?? "").trim();
   const verseRef = String(body.verseRef ?? "").trim();
   const verseText = String(body.verseText ?? "").trim();
+  // Nov 11, 2026, v53: the request carries its pack's
+  // language, so a Spanish body is rewritten in Spanish.
+  const _lang = String(body.language ?? "en").trim().toLowerCase();
+  const language = _lang === "es" ? "es" : "en";
   if (!draftId) return Response.json({ ok: false, error: "A draft id is required." }, { status: 400 });
   if (!day) return Response.json({ ok: false, error: "A day is required." }, { status: 400 });
   if (!text) return Response.json({ ok: false, error: "Nothing to rewrite." }, { status: 400 });
@@ -48,7 +52,7 @@ export async function POST(request) {
   const id = randomBytes(8).toString("hex");
   const req = {
     id, status: "queued", createdAt: new Date().toISOString(),
-    email: s.email, draftId, day, body: text, verseRef, verseText,
+    email: s.email, draftId, day, body: text, verseRef, verseText, language,
     note: "Rewrite recorded only. The worker rewrites the paragraph(s) that quote the verse, which takes about 2-3 minutes, and the review page picks up the result. Nothing in the draft changes until the pastor sees the new text.",
   };
   writeFileSync(reqPath(id), JSON.stringify(req, null, 1));

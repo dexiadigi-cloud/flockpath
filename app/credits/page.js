@@ -1,10 +1,10 @@
 export default function Credits() {
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
+    <main className="fp-main fp-main-narrow">
       <h1>Flockpath credits: open source, free</h1>
       <p>Flockpath is built only from free, open-source software and public-domain or openly licensed data. No paid AI API, no per-token cost, no per-seat SaaS. The full audit lives in the app&apos;s OPEN-SOURCE.md.</p>
       <h2>Software</h2>
-      <p>Next.js, React, Zod, and qrcode (all MIT); Node.js (MIT) with SQLite (public domain); llama.cpp (MIT) for local model inference; Typst (Apache 2.0) for PDFs; pypdf (BSD-3-Clause) for PDF upload; usfm2dict (MIT, SIL International) for Bible ingestion; DejaVu and Liberation fonts (free, SIL OFL for Liberation).</p>
+      <p>Next.js, React, Zod, and qrcode (all MIT); Node.js (MIT) with SQLite (public domain); llama.cpp (MIT) for local model inference; Typst (Apache 2.0) for PDFs; pypdf (BSD-3-Clause) for PDF upload; usfm2dict (MIT, SIL International) for Bible ingestion; DejaVu and Liberation fonts (free, SIL OFL for Liberation); Cormorant Garamond and Inter fonts for the app interface (both SIL Open Font License 1.1, license texts in public/fonts/).</p>
       <h2>Model</h2>
       <p>Qwen3.5-4B, Apache 2.0, run locally with llama.cpp. No data is sent to any AI provider, and no API key is needed.</p>
       <h2>Scripture</h2>

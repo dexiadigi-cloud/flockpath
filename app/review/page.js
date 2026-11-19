@@ -17,8 +17,8 @@ export default async function Review({ searchParams }) {
   const draftId = typeof params?.draft === "string" ? params.draft : undefined;
   return (
     <div>
-      <p style={{ maxWidth: 820, margin: "16px auto 0", padding: "0 24px", fontFamily: "system-ui, sans-serif" }}>
-        Signed in as {session.name}, {session.church} | <SignOutButton />
+      <p className="fp-main" style={{ paddingBottom: 0, paddingTop: 16 }}>
+        Signed in as {session.name}{session.role === "member" ? " (member)" : `, ${session.church}`} | <SignOutButton />
       </p>
       <ReviewPage session={session} draftId={draftId} />
     </div>

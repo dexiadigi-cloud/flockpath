@@ -29,6 +29,7 @@ if [ "$KIND" = "install" ] || [ "$WITH_PHOS" = "1" ]; then
   [ -f "$PHOS_DB" ] || { echo "Trimmed phos.db not found at $PHOS_DB. Build it first." >&2; exit 1; }
 fi
 [ -f "$REPO/../hymn-desk/data/hymns.json" ] || { echo "hymn-desk data/hymns.json not found." >&2; exit 1; }
+[ -f "$REPO/../hymn-desk/data/hymns-es.json" ] || { echo "hymn-desk data/hymns-es.json not found." >&2; exit 1; }
 [ -f "$REPO/../hymn-desk/scripts/match_hymn.py" ] || { echo "hymn-desk scripts/match_hymn.py not found." >&2; exit 1; }
 
 rm -rf "$STAGE"
@@ -37,6 +38,7 @@ mkdir -p "$APP/data" "$ROOT/hymn-desk/scripts" "$ROOT/hymn-desk/data"
 rsync -a \
   --exclude '/node_modules/' --exclude '/.next/' --exclude '/.venv/' \
   --exclude '/models/' --exclude '/output/' --exclude '/data/' \
+  --exclude '/demo-video/' --exclude '__pycache__/' \
   --exclude '/mac-package/' --exclude '/tools/typst-x86_64-unknown-linux-musl/' \
   --exclude '/tools/typst.tar.xz' --exclude '/*.log' \
   --exclude '/.env' \
@@ -45,7 +47,10 @@ rsync -a \
   "$REPO/" "$APP/"
 # Shipped data only: BSB stores, the demo pack, the demo draft,
 # and (install, or update with --with-phos) the trimmed Phos DB.
-for f in "$REPO"/data/bsb-*.json; do
+# Nov 11, 2026, v53: the Spanish stores ship too (RV1909 and
+# Español Sencillo 2026, 66 each), so a Spanish pack builds
+# on the Mac without a re-download.
+for f in "$REPO"/data/bsb-*.json "$REPO"/data/rv1909-*.json "$REPO"/data/spabes-*.json; do
   # Merged stores are per-run test artifacts, not shipped data.
   case "$f" in *-merged.json) continue ;; esac
   cp "$f" "$APP/data/"
@@ -57,6 +62,7 @@ fi
 # Hymn Desk sibling: matcher + index only, nothing else.
 cp "$REPO/../hymn-desk/scripts/match_hymn.py" "$ROOT/hymn-desk/scripts/"
 cp "$REPO/../hymn-desk/data/hymns.json" "$ROOT/hymn-desk/data/"
+cp "$REPO/../hymn-desk/data/hymns-es.json" "$ROOT/hymn-desk/data/"
 # Updater + log bundler at the package root.
 for f in update-flockpath.sh update-flockpath.command collect-logs.sh collect-logs.command; do
   cp "$REPO/mac-package/$f" "$ROOT/$f"
@@ -85,6 +91,11 @@ CHECK="$(unzip -l "$ZIP")"
 echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/VERSION" || { echo "Zip missing flockpath/VERSION." >&2; exit 1; }
 BSB_COUNT="$(echo "$CHECK" | grep "flockpath-mac-test/flockpath/data/bsb-.*\.json" | grep -vc "merged")"
 [ "$BSB_COUNT" -eq 66 ] || { echo "Zip has $BSB_COUNT BSB stores, expected 66." >&2; exit 1; }
+RV_COUNT="$(echo "$CHECK" | grep "flockpath-mac-test/flockpath/data/rv1909-.*\.json" | grep -vc "merged")"
+[ "$RV_COUNT" -eq 66 ] || { echo "Zip has $RV_COUNT RV1909 stores, expected 66." >&2; exit 1; }
+SPABES_COUNT="$(echo "$CHECK" | grep "flockpath-mac-test/flockpath/data/spabes-.*\.json" | grep -vc "merged")"
+[ "$SPABES_COUNT" -eq 66 ] || { echo "Zip has $SPABES_COUNT Español Sencillo stores, expected 66." >&2; exit 1; }
+echo "$CHECK" | grep -q "flockpath-mac-test/hymn-desk/data/hymns-es.json" || { echo "Zip missing Spanish hymn index hymns-es.json." >&2; exit 1; }
 echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/data/locked-pack.json" || { echo "Zip missing demo locked-pack.json." >&2; exit 1; }
 echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/data/generated-pack-draft-v2.json" || { echo "Zip missing demo draft." >&2; exit 1; }
 for bad in "models/" "auth.db" "packs-library.json" "node_modules/" ".next/" "pack-job-" "pack-john3"; do

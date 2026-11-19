@@ -9,9 +9,11 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "system-ui, sans-serif", margin: 0, background: "#faf7f0", color: "#222" }}>
-        <AppHeader />
-        {children}
+      <body>
+        <div className="fp-shell">
+          <AppHeader />
+          <div className="fp-content">{children}</div>
+        </div>
       </body>
     </html>
   );

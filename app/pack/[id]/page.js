@@ -30,6 +30,11 @@ function findPack(id) {
     if (existsSync(libPath)) {
       const lib = JSON.parse(readFileSync(libPath, "utf-8"));
       const entry = lib.find((e) => e.id === realId);
+      // Nov 11, 2026, v52: a member pack is never
+      // published. A personal study has no share page, no
+      // share link, and no approval code, so this page
+      // 404s for one exactly as for a missing pack.
+      if (entry?.pack && (entry.status === "personal" || (entry.pack.mode ?? "pastor") === "member")) return null;
       if (entry?.pack) return entry.pack;
       if (entry && realId === lockedPackGenesis.id) return lockedPackGenesis;
     }
@@ -107,7 +112,7 @@ export default async function SharePage({ params }) {
   } catch { isOwner = false; }
 
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
+    <main className="fp-main fp-main-narrow">
       <h1>{lockedPack.title}</h1>
       <p>{lockedPack.passage} - a week of family discipleship</p>
       <p><strong>Memory verse: {formatRef(lockedPack.memoryVerse.reference)}</strong><br />&ldquo;{lockedPack.memoryVerse.text}&rdquo;</p>
@@ -141,7 +146,7 @@ export default async function SharePage({ params }) {
           <p>{lockedPack.classicDevotional.workTitle ? <>From {lockedPack.classicDevotional.workTitle}{lockedPack.classicDevotional.tradition_label ? ` (${lockedPack.classicDevotional.tradition_label})` : ""}.</> : "From a public-domain classic devotional."}</p>
         </>
       ) : null}
-      {lockedPack.coloring ? (<><h2>Coloring: {lockedPack.coloring.title.replace(/ Coloring$/, "")}</h2><p>{lockedPack.coloring.description}</p><img src={`/coloring/${COLORING_TEMPLATES[coloringId].file}`} alt={COLORING_TEMPLATES[coloringId].alt} width={400} style={{ border: "1px solid #ccc", background: "#fff" }} /></>) : null}
+      {lockedPack.coloring ? (<><h2>Coloring: {lockedPack.coloring.title.replace(/ Coloring$/, "").replace(/^Colorear: /, "")}</h2><p>{lockedPack.coloring.description}</p><img src={`/coloring/${COLORING_TEMPLATES[coloringId].file}`} alt={COLORING_TEMPLATES[coloringId].alt} width={400} style={{ border: "1px solid #ccc", background: "#fff" }} /></>) : null}
       {lockedPack.hymn ? (
         <>
           <h2>Hymn: {lockedPack.hymn.title}</h2>

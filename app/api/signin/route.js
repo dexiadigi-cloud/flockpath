@@ -20,9 +20,9 @@ export async function POST(request) {
       httpOnly: true, sameSite: "lax", path: "/", maxAge: 7 * 24 * 60 * 60,
     });
     const pastor = getPastor(session.email);
-    return Response.json({ ok: true, email: session.email, name: session.name, church: session.church, denomination: pastor?.denomination ?? "non-denominational" });
+    return Response.json({ ok: true, email: session.email, name: session.name, church: session.church, role: pastor?.role ?? "pastor", denomination: pastor?.denomination ?? "non-denominational" });
   } catch (e) {
-    const validation = ["Enter a valid email.", "Password must be at least 8 characters.", "Name and church are required."];
+    const validation = ["Enter a valid email.", "Password must be at least 8 characters.", "Name and church are required.", "Your first name is required."];
     // Nov 4, 2026, lockout: a locked account is not a wrong
     // password, it is a rate limit. 429 says so plainly.
     const status = validation.includes(e.message) ? 400 : String(e.message).startsWith("Too many wrong passwords") ? 429 : 401;

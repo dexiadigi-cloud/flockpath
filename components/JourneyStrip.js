@@ -10,7 +10,15 @@
 // orientation, never a task: the tasks below it always
 // run strictly top to bottom, never top, then bottom,
 // then top again.
-const STAGES = [
+// Nov 11, 2026, v52, Phase 2 member mode: a member's
+// journey ends at saving and printing, never at approval
+// or sharing, so the last two stages are "Save my study"
+// and "Print" for a member. The strip takes an optional
+// member flag; pastor pages are unchanged.
+// Nov 12, 2026, v55: rendered as step pills (mockup
+// Design 2): numbered circles, done steps green with a
+// check, the current step gold, later steps muted.
+const PASTOR_STAGES = [
   { key: "start", label: "Start a pack" },
   { key: "building", label: "Building" },
   { key: "review", label: "Review" },
@@ -18,16 +26,26 @@ const STAGES = [
   { key: "share", label: "Share" },
 ];
 
-export default function JourneyStrip({ stage }) {
+const MEMBER_STAGES = [
+  { key: "start", label: "Start a pack" },
+  { key: "building", label: "Building" },
+  { key: "review", label: "Review" },
+  { key: "save", label: "Save my study" },
+  { key: "print", label: "Print" },
+];
+
+export default function JourneyStrip({ stage, member }) {
+  const STAGES = member ? MEMBER_STAGES : PASTOR_STAGES;
   const current = Math.max(0, STAGES.findIndex((s) => s.key === stage));
   return (
     <div className="fp-steps" aria-label="Pack journey">
       {STAGES.map((s, i) => (
-        <span key={s.key}>
-          <span className={i === current ? "fp-step-current" : "fp-step"}>
-            {i < current ? "✓ " : `${i + 1}. `}{s.label}
+        <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <span className={`fp-step-pill${i < current ? " fp-step-pill-done" : i === current ? " fp-step-pill-current" : ""}`}>
+            <span className="fp-step-num">{i < current ? "\u2713" : i + 1}</span>
+            {s.label}
           </span>
-          {i < STAGES.length - 1 ? <span aria-hidden="true"> → </span> : null}
+          {i < STAGES.length - 1 ? <span className="fp-step-sep" aria-hidden="true">&rsaquo;</span> : null}
         </span>
       ))}
     </div>

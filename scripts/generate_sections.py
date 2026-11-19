@@ -43,10 +43,16 @@ import json
 import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+# Nov 11, 2026, v54, Phase 4 flexible length: a 7-day pack
+# runs the full week, so Saturday and Sunday join the week
+# list. A 3-day pack uses the first three, a 5-day pack the
+# first five; main() slices this list by the ref count.
+DAYS7 = DAYS + ["Saturday", "Sunday"]
 import os
 MODEL = Path(os.environ.get("FLOCKPATH_MODEL", str(ROOT / "models/Qwen3.5-4B-S-TS-Q4_K_S.gguf")))
 # Proof model, adopted 2026-10-30 after head-to-head wins over
@@ -144,6 +150,81 @@ VOICE_BLOCK = (
     "always capitalize He, His, and Him."
 )
 
+# Nov 11, 2026, v53 (Phase 3, Spanish v1): the language switch.
+# LANG is "en" unless --lang es is passed (or FLOCKPATH_LANG=es
+# is set); main() calls set_lang() before any generation. Every
+# Spanish prompt, code-list, and helper below is gated on LANG,
+# so English behavior is byte-identical when --lang is absent.
+# All Spanish text in this file is UNREVIEWED by a
+# Spanish-speaking reader (flagged for review in the v53
+# report); the JSON keys stay English in both languages, so
+# the draft schema is unchanged.
+LANG = os.environ.get("FLOCKPATH_LANG", "en").strip().lower() or "en"
+
+def set_lang(lang):
+    global LANG
+    LANG = "es" if str(lang or "").strip().lower() == "es" else "en"
+
+def _fold(s):
+    # Strip accents (NFD + drop combining marks): "Amén" -> "Amen",
+    # "Éxodo" -> "Exodo". Used by every accent-insensitive check.
+    return "".join(c for c in unicodedata.normalize("NFD", str(s or ""))
+                   if unicodedata.category(c) != "Mn")
+
+VOICE_BLOCK_ES = (
+    "Escribe como un pastor cristiano que cree en la Biblia y confía en la "
+    "Palabra de Dios como verdad. Escribe en un lenguaje sencillo, cálido y "
+    "cotidiano, como un pastor que habla con una familia en la mesa de la "
+    "cocina. Usa tus propias palabras. No copies las frases del material de "
+    "estudio, y no uses sus palabras anticuadas o formales (por ejemplo: "
+    "semblante, ceñudo, censura, remisión, supone). Si una palabra sonaría "
+    "extraña al decirla en voz alta a una familia, no la uses. Una palabra "
+    "en griego o en hebreo está bien cuando das su significado sencillo en "
+    "español justo al lado la primera vez (por ejemplo: \"charizomenoi, que "
+    "significa perdonar con gracia\"); nunca pongas una palabra extranjera "
+    "sin traducir dentro de una frase. No empieces un párrafo con el nombre "
+    "de un día, una etiqueta o un título (nunca \"jueves:\", nunca "
+    "\"devocional del jueves:\"). Escribe solo párrafos sencillos. Cuando te "
+    "refieras a Dios, escribe siempre Él y Su con mayúscula."
+)
+
+def voice_block():
+    # Nov 11, 2026, v54, Phase 4 doctrinal profile: when the
+    # pastor wrote a statement, it rides here, after the
+    # identity frame, so it reaches every prompt that uses
+    # the voice block (adult fields, leader, notes, repairs).
+    # It steers emphasis only: it never overrides Scripture
+    # and never changes what a verse says. When no statement
+    # exists the block is byte-identical to v53, so an empty
+    # profile changes nothing at all.
+    base = VOICE_BLOCK_ES if LANG == "es" else VOICE_BLOCK
+    if not DOCTRINAL_PROFILE:
+        return base
+    if LANG == "es":
+        return base + "\n\nEl perfil doctrinal del pastor, en sus propias palabras, orienta el énfasis solamente. Nunca anula la Escritura ni cambia lo que dice un versículo: " + DOCTRINAL_PROFILE
+    return base + "\n\nThe pastor's own doctrinal profile, in their own words, steers emphasis only. It never overrides Scripture, and it never changes what a verse says: " + DOCTRINAL_PROFILE
+
+# Nov 11, 2026, v54, Phase 4 doctrinal profile: the
+# pastor's own short statement, set once per process from
+# --doctrinal-file (or empty). Stored only in the local auth
+# database and the local job file; never in a log, never in
+# a pack. Cap 2000 characters, enforced at storage and here.
+DOCTRINAL_PROFILE = ""
+
+def set_doctrinal_profile(text):
+    global DOCTRINAL_PROFILE
+    DOCTRINAL_PROFILE = str(text or "").strip()[:2000]
+
+# Spanish day names for prompt prose. The JSON day enum stays
+# English (Monday-Sunday) in both languages, for schema
+# compatibility; the PDF renders lunes-domingo.
+DAYS_ES = {"Monday": "lunes", "Tuesday": "martes", "Wednesday": "miércoles",
+           "Thursday": "jueves", "Friday": "viernes", "Saturday": "sábado",
+           "Sunday": "domingo"}
+
+def day_es(day):
+    return DAYS_ES.get(day, day.lower()) if LANG == "es" else day
+
 def save_raw(tag, text):
     (ROOT / f"data/test-raw-{tag}.txt").write_text(text, encoding="utf-8")
 
@@ -164,13 +245,14 @@ def match_hymns(refs, topics):
     if not hymn_desk.is_dir():
         hymn_desk = Path.home() / "workspace" / "hymn-desk"
     script = hymn_desk / "scripts" / "match_hymn.py"
-    data = hymn_desk / "data" / "hymns.json"
+    data = hymn_desk / "data" / ("hymns-es.json" if LANG == "es" else "hymns.json")
     if not script.exists() or not data.exists():
         print("Hymn Desk not found, no song section.")
         return None, []
     try:
         out = subprocess.run(
-            ["python3", str(script), ",".join(refs), ",".join(topics), "--json"],
+            ["python3", str(script), ",".join(refs), ",".join(topics), "--json",
+             "--lang", LANG],
             capture_output=True, text=True, timeout=30)
         candidates = json.loads(out.stdout)
     except Exception as e:
@@ -489,16 +571,28 @@ def build_sermon_snapshot(llm, sermon_text, tag):
     # for the answer; verification below uses the FULL text.
     words = str(sermon_text or "").split()
     head = " ".join(words[:SERMON_SNAPSHOT_MAX_WORDS])
-    prompt = (
-        "You are helping a pastor turn a sermon into a short cover note for a family discipleship pack.\n"
-        "Output JSON ONLY, no markdown, no explanation.\n"
-        "Read the sermon below and write:\n"
-        "- \"summary\": 2-3 sentences, at most 45 words, in plain words, saying what the sermon was about and what it asks of us.\n"
-        "- \"quote\": ONE short quote from the sermon, at most 30 words, copied EXACTLY as the preacher said it, word for word. The quote must be one or more COMPLETE sentences: start at the beginning of a sentence and end with a period, exclamation mark, or question mark. Never start in the middle of a sentence and never cut a sentence off. Do not paraphrase the quote. Do not invent words. If no short quotable line stands out, use null.\n"
-        "The quote must be the preacher's own words from the sermon text, never your own words.\n"
-        "Sermon:\n" + head + "\n"
-        "JSON shape: {\"summary\": \"...\", \"quote\": \"...\" or null}"
-    )
+    if LANG == "es":
+        prompt = (
+            "Estás ayudando a un pastor a convertir un sermón en una nota corta para la portada de un paquete de discipulado familiar.\n"
+            "Responde solo con JSON, sin markdown, sin explicación.\n"
+            "Lee el sermón de abajo y escribe:\n"
+            "- \"summary\": 2-3 frases, como máximo 45 palabras, con palabras sencillas, diciendo de qué trató el sermón y qué nos pide.\n"
+            "- \"quote\": UNA cita corta del sermón, como máximo 30 palabras, copiada EXACTAMENTE como la dijo el predicador, palabra por palabra. La cita debe ser una o más frases COMPLETAS: empieza al principio de una frase y termina con un punto, un signo de exclamación o un signo de interrogación. Nunca empieces en medio de una frase y nunca cortes una frase. No parafrasees la cita. No inventes palabras. Si ninguna frase corta se destaca, usa null.\n"
+            "La cita debe ser las propias palabras del predicador tomadas del texto del sermón, nunca tus propias palabras.\n"
+            "Sermón:\n" + head + "\n"
+            "Forma JSON: {\"summary\": \"...\", \"quote\": \"...\" o null}"
+        )
+    else:
+        prompt = (
+            "You are helping a pastor turn a sermon into a short cover note for a family discipleship pack.\n"
+            "Output JSON ONLY, no markdown, no explanation.\n"
+            "Read the sermon below and write:\n"
+            "- \"summary\": 2-3 sentences, at most 45 words, in plain words, saying what the sermon was about and what it asks of us.\n"
+            "- \"quote\": ONE short quote from the sermon, at most 30 words, copied EXACTLY as the preacher said it, word for word. The quote must be one or more COMPLETE sentences: start at the beginning of a sentence and end with a period, exclamation mark, or question mark. Never start in the middle of a sentence and never cut a sentence off. Do not paraphrase the quote. Do not invent words. If no short quotable line stands out, use null.\n"
+            "The quote must be the preacher's own words from the sermon text, never your own words.\n"
+            "Sermon:\n" + head + "\n"
+            "JSON shape: {\"summary\": \"...\", \"quote\": \"...\" or null}"
+        )
     out = call_model(llm, prompt, f"{tag}-sermon-snapshot", max_tokens=300)
     summary = str(out.get("summary") or "").strip()
     if not summary:
@@ -580,10 +674,22 @@ _SERMON_STOPWORDS = set(
     "they their them we us our you your he she his her it its this that these those who whom whose what when where why how than then just also now here there down up out over under again once into about after before between through during above below from with without within upon all any some no not only own same so too very can could will would shall should may might must do does did have has had am".split()
 )
 
+# Nov 11, 2026, v53: Spanish stopwords for the same excerpt
+# overlap, written without accents so they match the folded
+# comparison below.
+_SERMON_STOPWORDS_ES = set(
+    "el la los las un una unos unas de en y o a con por para que es son fue fueron ser estar como mas pero sus su este esta estos estas eso esa ese aquel aquella mi mis tu tus le les se si no si ya cuando donde cual cuales quien quienes del al lo nos vos yo tu el ella nosotros vosotros ellos ellas me te se nos os lo la los las les mi mis tu tus su sus nuestro nuestra nuestros nuestras este esta estos estas esto eso esa ese aquel aquella quien quienes que cual cuales como cuando donde por que porque si no si tambien solo ya ahora aqui alli abajo arriba afuera adentro otra vez una vez entre durante sobre bajo desde hasta sin con dentro fuera todos todo alguna alguno ninguna ningun mismo misma tan muy puede pueden podria podrian debe deben haber tiene tienen era eran es son fue fueron ser estar hay".split()
+)
+
 def _src_content_words(text):
     s = (text or "").lower().replace("'s", "").replace("’s", "")
+    if LANG == "es":
+        s = _fold(s)
+        stop = _SERMON_STOPWORDS_ES
+    else:
+        stop = _SERMON_STOPWORDS
     s = re.sub(r"[^a-z0-9 ]+", " ", s)
-    return [w for w in s.split() if w and w not in _SERMON_STOPWORDS]
+    return [w for w in s.split() if w and w not in stop]
 
 def sermon_excerpt_for_ref(sermon_text, verse_text, angle, lexicon_terms, max_words=300):
     # v37: the relevant sermon section for one verse, up to
@@ -671,13 +777,22 @@ def _quote_retry(llm, sermon_text, tag):
     # or None when the retry also fails.
     words = str(sermon_text or "").split()
     head = " ".join(words[:SERMON_SNAPSHOT_MAX_WORDS])
-    prompt = (
-        "You are helping a pastor turn a sermon into a short cover note for a family discipleship pack.\n"
-        "Output JSON ONLY, no markdown, no explanation.\n"
-        "The first try at a quote could not be verified as the preacher's exact words. Give ONE short quote from the sermon below, at most 30 words, copied EXACTLY as the preacher said it, word for word. The quote must be one or more COMPLETE sentences: start at the beginning of a sentence and end with a period, exclamation mark, or question mark. Never start in the middle of a sentence and never cut a sentence off. Do not paraphrase. Do not invent words.\n"
-        "Sermon:\n" + head + "\n"
-        "JSON shape: {\"quote\": \"...\"}"
-    )
+    if LANG == "es":
+        prompt = (
+            "Estás ayudando a un pastor a convertir un sermón en una nota corta para la portada de un paquete de discipulado familiar.\n"
+            "Responde solo con JSON, sin markdown, sin explicación.\n"
+            "El primer intento de la cita no se pudo verificar como las palabras exactas del predicador. Da UNA cita corta del sermón de abajo, como máximo 30 palabras, copiada EXACTAMENTE como la dijo el predicador, palabra por palabra. La cita debe ser una o más frases COMPLETAS: empieza al principio de una frase y termina con un punto, un signo de exclamación o un signo de interrogación. Nunca empieces en medio de una frase y nunca cortes una frase. No parafrasees. No inventes palabras.\n"
+            "Sermón:\n" + head + "\n"
+            "Forma JSON: {\"quote\": \"...\"}"
+        )
+    else:
+        prompt = (
+            "You are helping a pastor turn a sermon into a short cover note for a family discipleship pack.\n"
+            "Output JSON ONLY, no markdown, no explanation.\n"
+            "The first try at a quote could not be verified as the preacher's exact words. Give ONE short quote from the sermon below, at most 30 words, copied EXACTLY as the preacher said it, word for word. The quote must be one or more COMPLETE sentences: start at the beginning of a sentence and end with a period, exclamation mark, or question mark. Never start in the middle of a sentence and never cut a sentence off. Do not paraphrase. Do not invent words.\n"
+            "Sermon:\n" + head + "\n"
+            "JSON shape: {\"quote\": \"...\"}"
+        )
     try:
         out = call_model(llm, prompt, f"{tag}-sermon-snapshot-quote-retry", max_tokens=200)
     except Exception as e:
@@ -728,7 +843,17 @@ def fix_draw_god_activity(activity):
     # God's never falls through to God. Module-level so
     # the proof can import it directly, like the v25
     # negation helpers.
+    # Nov 11, 2026, v53: Spanish branch. Same narrow
+    # scope: a draw verb, then an article, "dibujo",
+    # "cara de", or the personal "a", then Dios. So
+    # "Dibuja a Dios" becomes "Dibuja a Jesús" and
+    # "Dibuja la cara de Dios" becomes "Dibuja la cara
+    # de Jesús", but "Dibuja el cielo y la tierra, y
+    # escribe lo que Dios hizo primero" is left alone.
     _a = str(activity or "")
+    if LANG == "es":
+        _a = re.sub(r"(\b(?:dibuja|dibujar|dibujando|haz)\b\s+(?:(?:un|una|el|la|los|las)\s+)?(?:dibujo\s+(?:de\s+)?)?(?:cara\s+de\s+)?(?:a\s+)?)Dios\b", r"\1Jesús", _a, flags=re.IGNORECASE)
+        return _a
     _a = re.sub(r"(\b(?:draw|drawing|sketch|sketching)\b\s+(?:(?:a|the|an)\s+)?(?:picture\s+)?(?:of\s+)?)God's\b", r"\1Jesus'", _a, flags=re.IGNORECASE)
     _a = re.sub(r"(\b(?:draw|drawing|sketch|sketching)\b\s+(?:(?:a|the|an)\s+)?(?:picture\s+)?(?:of\s+)?)God\b", r"\1Jesus", _a, flags=re.IGNORECASE)
     return _a
@@ -787,21 +912,45 @@ RHETORICAL_RULE = (
     "the thing the verse affirms."
 )
 
+# Nov 11, 2026, v53: Spanish rhetorical rule, same meaning.
+# The RV1909 JER 23:29 proving case: "¿No es mi palabra como
+# fuego, dice Jehová, y como martillo que quebranta la piedra?"
+RHETORICAL_RULE_ES = (
+    "Pregunta retórica: este versículo hace una pregunta cuya respuesta es "
+    "sí. Afirma lo que sigue, no lo niega. Nunca pongas el «no» sobre lo "
+    "que el versículo afirma."
+)
+
+def rhetorical_rule():
+    return RHETORICAL_RULE_ES if LANG == "es" else RHETORICAL_RULE
+
 NEGATION_RE = re.compile(r"\b(didn'?t|doesn'?t|not|never|no one|nothing)\b", re.I)
+
+# Nov 11, 2026, v53: Spanish negation trigger. "no" does the
+# work; "ni" is left out on purpose, it is a common
+# conjunction ("ni lo uno ni lo otro") and almost always
+# sits next to a "no" in the same verse anyway.
+NEGATION_RE_ES = re.compile(r"\b(no|nunca|nadie|nada|jamás|tampoco)\b", re.I)
 
 def verse_turns_on_negation(verse_text):
     # Same trigger as the review warning in lib/quality.mjs
     # (section 7), so the self-check runs on exactly the
     # verses the pastor used to have to read by hand.
+    if LANG == "es":
+        return bool(NEGATION_RE_ES.search(verse_text or ""))
     return bool(NEGATION_RE.search(verse_text or ""))
 
 def is_rhetorical_question(verse_text):
     # A question whose answer is yes: the verse ends with a
     # question mark (allowing a closing quote) and opens with
     # an auxiliary + not. JER 23:29 is the proving case.
+    # Spanish: ends with "?" and opens with "¿No". The
+    # RV1909 JER 23:29 opens "¿No es mi palabra como fuego...?"
     t = (verse_text or "").strip()
     if not re.search(r"\?\s*[”\"'’)\]]*\s*$", t):
         return False
+    if LANG == "es":
+        return bool(re.search(r"^\s*¿\s*no\b", t, re.I))
     return bool(re.search(r"\b(is|are|was|were|did|do|does|shall|will|has|have|can|could)\s+not\b", t, re.I))
 
 def quotes_verse_verbatim(text, verse_text):
@@ -810,9 +959,12 @@ def quotes_verse_verbatim(text, verse_text):
     # call_adult_field and the review warning in
     # lib/quality.mjs (section 7b): any 8 consecutive verse
     # words, in order, in the text; a verse shorter than 8
-    # words counts when the whole verse appears.
+    # words counts when the whole verse appears. Accents
+    # are folded first (v53): "cómo" becomes "como" on
+    # both sides, so a copied Spanish phrase still
+    # matches; English is unaffected.
     def _nw(s):
-        return [w for w in (re.sub(r"[^a-z0-9]", "", x.lower()) for x in (s or "").split()) if w]
+        return [w for w in (re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in (s or "").split()) if w]
     vw = _nw(verse_text)
     tw = _nw(text)
     if not vw or not tw:
@@ -840,18 +992,42 @@ def check_negation_flip(llm, verse_text, paragraph, tag):
     # with no "not" in it. Do not re-add a negation-word
     # filter on the verdict; the examples are the guard.
     try:
-        result = call_model(llm, "\n".join([
-            "Read the verse and the paragraph below. The paragraph is supposed to say the same thing as the verse, in different words.",
-            f"Verse: {verse_text}",
-            f"Paragraph: {paragraph}",
-            "A flip means the paragraph DENIES something the verse affirms, or AFFIRMS something the verse denies. Adding an example or explaining an image is not a flip. Only a denial or affirmation that goes against the verse counts.",
-            'Example of a flip: verse "Is not My word like fire?" Paragraph "His word is not like fire." That is a FLIP, because the verse affirms the word is like fire and the paragraph denies it.',
-            'Example of SAME: verse "Is not My word like fire?" Paragraph "God\'s word burns like fire and breaks hard hearts." That is SAME, because it keeps what the verse affirms.',
-            'Example of a flip: verse "He who did not spare His own Son, but gave Him up for us all." Paragraph "God held back His Son and kept Him safe." That is a FLIP, because the verse says God gave His Son up and the paragraph says He held Him back.',
-            'Example of SAME: verse "He who did not spare His own Son, but gave Him up for us all." Paragraph "God gave up His own Son for us." That is SAME, because it keeps what the verse affirms.',
-            "Does the paragraph flip the verse? Output JSON ONLY, no markdown, no explanation.",
-            'JSON shape: {"verdict": "SAME" or "FLIP", "sentence": "the one sentence that flips the meaning, or empty string if SAME"}',
-        ]), tag, max_tokens=300)
+        if LANG == "es":
+            # Nov 11, 2026, v53: Spanish check, same two
+            # example pairs. The verse texts are the RV1909
+            # store texts, shortened the same way the English
+            # examples shorten theirs: JER 23:29 "¿No es mi
+            # palabra como el fuego, dice Jehová, y como
+            # martillo que quebranta la piedra?" and ROM 8:32
+            # "El que aun á su propio Hijo no perdonó, antes
+            # le entregó por todos nosotros, ¿cómo no nos dará
+            # también con él todas las cosas?"
+            lines = [
+                "Lee el versículo y el párrafo de abajo. Se supone que el párrafo dice lo mismo que el versículo, con otras palabras.",
+                f"Versículo: {verse_text}",
+                f"Párrafo: {paragraph}",
+                "Un cambio de sentido significa que el párrafo NIEGA algo que el versículo afirma, o AFIRMA algo que el versículo niega. Añadir un ejemplo o explicar una imagen no es un cambio de sentido. Solo cuenta una negación o afirmación que va en contra del versículo.",
+                'Ejemplo de un cambio: versículo "¿No es mi palabra como el fuego?" Párrafo "Su palabra no es como el fuego." Eso es un CAMBIO, porque el versículo afirma que la palabra es como el fuego y el párrafo lo niega.',
+                'Ejemplo de IGUAL: versículo "¿No es mi palabra como el fuego?" Párrafo "La palabra de Dios arde como el fuego y quebranta los corazones duros." Eso es IGUAL, porque mantiene lo que el versículo afirma.',
+                'Ejemplo de un cambio: versículo "El que aun á su propio Hijo no perdonó, antes le entregó por todos nosotros." Párrafo "Dios retuvo a su Hijo y lo guardó." Eso es un CAMBIO, porque el versículo dice que Dios entregó a su Hijo y el párrafo dice que lo retuvo.',
+                'Ejemplo de IGUAL: versículo "El que aun á su propio Hijo no perdonó, antes le entregó por todos nosotros." Párrafo "Dios entregó a su propio Hijo por nosotros." Eso es IGUAL, porque mantiene lo que el versículo afirma.',
+                "¿El párrafo cambia el sentido del versículo? Responde solo con JSON, sin markdown, sin explicación.",
+                'Forma JSON: {"verdict": "SAME" o "FLIP", "sentence": "la frase que cambia el sentido, o cadena vacía si es SAME"}',
+            ]
+        else:
+            lines = [
+                "Read the verse and the paragraph below. The paragraph is supposed to say the same thing as the verse, in different words.",
+                f"Verse: {verse_text}",
+                f"Paragraph: {paragraph}",
+                "A flip means the paragraph DENIES something the verse affirms, or AFFIRMS something the verse denies. Adding an example or explaining an image is not a flip. Only a denial or affirmation that goes against the verse counts.",
+                'Example of a flip: verse "Is not My word like fire?" Paragraph "His word is not like fire." That is a FLIP, because the verse affirms the word is like fire and the paragraph denies it.',
+                'Example of SAME: verse "Is not My word like fire?" Paragraph "God\'s word burns like fire and breaks hard hearts." That is SAME, because it keeps what the verse affirms.',
+                'Example of a flip: verse "He who did not spare His own Son, but gave Him up for us all." Paragraph "God held back His Son and kept Him safe." That is a FLIP, because the verse says God gave His Son up and the paragraph says He held Him back.',
+                'Example of SAME: verse "He who did not spare His own Son, but gave Him up for us all." Paragraph "God gave up His own Son for us." That is SAME, because it keeps what the verse affirms.',
+                "Does the paragraph flip the verse? Output JSON ONLY, no markdown, no explanation.",
+                'JSON shape: {"verdict": "SAME" or "FLIP", "sentence": "the one sentence that flips the meaning, or empty string if SAME"}',
+            ]
+        result = call_model(llm, "\n".join(lines), tag, max_tokens=300)
         verdict = str(result.get("verdict", "")).upper()
         if verdict not in ("SAME", "FLIP"):
             return "UNKNOWN", ""
@@ -866,23 +1042,91 @@ def repair_negation_flip(llm, verse_text, paragraph, flipping_sentence, tag):
     # needs it to know what the verse actually affirms.
     # Returns the rewritten paragraph, or "" on failure.
     try:
-        result = call_model(llm, "\n".join([
-            "Rewrite ONE paragraph so it says the same thing as the verse below. Output JSON ONLY, no markdown, no explanation.",
-            f"Verse: {verse_text}",
-            f"Original paragraph: {paragraph}",
-            f"The problem: this sentence flips the verse's meaning: \"{flipping_sentence}\" It denies something the verse affirms, or affirms something the verse denies.",
-            "Rewrite the paragraph with the same meaning as the verse, in your own plain words, in about 50 words, keeping at least 2 sentences. Do NOT quote the verse in the paragraph.",
-            'JSON shape: {"bodySays": "..."}',
-        ]), tag, max_tokens=600)
+        if LANG == "es":
+            lines = [
+                "Reescribe UN párrafo para que diga lo mismo que el versículo de abajo. Responde solo con JSON, sin markdown, sin explicación.",
+                f"Versículo: {verse_text}",
+                f"Párrafo original: {paragraph}",
+                f"El problema: esta frase cambia el sentido del versículo: \"{flipping_sentence}\" Niega algo que el versículo afirma, o afirma algo que el versículo niega.",
+                "Reescribe el párrafo con el mismo sentido que el versículo, con tus propias palabras sencillas, en unas 50 palabras, con al menos 2 frases. NO cites el versículo en el párrafo.",
+                'Forma JSON: {"bodySays": "..."}',
+            ]
+        else:
+            lines = [
+                "Rewrite ONE paragraph so it says the same thing as the verse below. Output JSON ONLY, no markdown, no explanation.",
+                f"Verse: {verse_text}",
+                f"Original paragraph: {paragraph}",
+                f"The problem: this sentence flips the verse's meaning: \"{flipping_sentence}\" It denies something the verse affirms, or affirms something the verse denies.",
+                "Rewrite the paragraph with the same meaning as the verse, in your own plain words, in about 50 words, keeping at least 2 sentences. Do NOT quote the verse in the paragraph.",
+                'JSON shape: {"bodySays": "..."}',
+            ]
+        result = call_model(llm, "\n".join(lines), tag, max_tokens=600)
         return result.get("bodySays", "") or ""
     except Exception as e:
         print(f"Negation repair failed: {e}")
         return ""
 
+def check_doctrinal_profile(llm, profile, adult, tag):
+    # Nov 11, 2026, v54, Phase 4 doctrinal profile: one
+    # advisory model pass after generation, only when the
+    # pastor wrote a statement. It reads each day's adult
+    # body against the statement and returns a list of
+    # {day, note} warnings, or [] when nothing leans against
+    # the statement. Advisory only: it never blocks, never
+    # rewrites, and a failed call returns [] so the pack
+    # still builds. The notes describe the tension in plain
+    # words and never quote the statement back, so the
+    # pastor's own words stay out of the draft. The draft
+    # carries the warnings as review-only metadata; the lock
+    # schema strips them, so they never reach a pack or PDF.
+    # The statement itself is never printed here. Like the
+    # sermon text, the statement is read by the writing model
+    # the pastor already chose, as part of this pack's own
+    # prompts, and nowhere else.
+    if not profile or not adult:
+        return []
+    try:
+        bodies = "\n\n".join(f"{d.get('day', '')}: {(d.get('body', '') or '')[:1200]}" for d in adult)
+        if LANG == "es":
+            lines = [
+                "Lee el perfil doctrinal del pastor y los devocionales para adultos de abajo. Tu trabajo es señalar dónde un devocional enseña algo que va en contra del perfil, no reescribirlo.",
+                f"Perfil doctrinal del pastor: {profile}",
+                f"Devocionales:\n{bodies}",
+                "Solo señala una tensión real: una afirmación que contradice el perfil, o un énfasis que lo niega. No señales una diferencia de palabras, ni un tema que el perfil no menciona. Si no hay tensión real, responde con una lista vacía.",
+                "Describe cada tensión con tus propias palabras, en una frase corta. No cites el perfil. Responde solo con JSON, sin markdown, sin explicación.",
+                'Forma JSON: {"warnings": [{"day": "Monday", "note": "..."}]}',
+            ]
+        else:
+            lines = [
+                "Read the pastor's doctrinal profile and the adult devotionals below. Your job is to flag where a devotional teaches something that leans against the profile, not to rewrite it.",
+                f"Pastor's doctrinal profile: {profile}",
+                f"Devotionals:\n{bodies}",
+                "Only flag a real tension: a claim that contradicts the profile, or an emphasis that denies it. Do not flag a difference in wording, or a topic the profile does not mention. If there is no real tension, answer with an empty list.",
+                "Describe each tension in your own plain words, in one short sentence. Do not quote the profile. Output JSON ONLY, no markdown, no explanation.",
+                'JSON shape: {"warnings": [{"day": "Monday", "note": "..."}]}',
+            ]
+        result = call_model(llm, "\n".join(lines), tag, max_tokens=600)
+        raw = result.get("warnings", []) or []
+        valid_days = {d.get("day") for d in adult}
+        out = []
+        for w in raw if isinstance(raw, list) else []:
+            if not isinstance(w, dict):
+                continue
+            day = str(w.get("day", "")).strip()
+            note = str(w.get("note", "")).strip()
+            if day in valid_days and note:
+                out.append({"day": day, "note": note[:300]})
+            if len(out) >= 7:
+                break
+        return out
+    except Exception as e:
+        print(f"Doctrinal check failed: {e}")
+        return []
+
 def main():
     args = sys.argv[1:]
     if len(args) < 6:
-        print("usage: generate_sections.py <tag> <store.json> <passage> <refs_csv> <angles_csv> <out.json> [phos_bundle.json] [--progress-file <path> --progress-base <n> --progress-total <n>] [--sermon-file <path>]", file=sys.stderr)
+        print("usage: generate_sections.py <tag> <store.json> <passage> <refs_csv> <angles_csv> <out.json> [phos_bundle.json] [--progress-file <path> --progress-base <n> --progress-total <n>] [--sermon-file <path>] [--doctrinal-file <path>] [--lang en|es]", file=sys.stderr)
         return 2
     tag, store_path, passage, refs_csv, angles_csv, out_path = args[:6]
     phos_path = None
@@ -890,6 +1134,7 @@ def main():
     progress_base = 0
     progress_total = 0
     sermon_file = None
+    doctrinal_file = None
     rest = args[6:]
     i = 0
     while i < len(rest):
@@ -906,6 +1151,18 @@ def main():
         elif arg == "--sermon-file" and i + 1 < len(rest):
             sermon_file = rest[i + 1]
             i += 2
+        elif arg == "--doctrinal-file" and i + 1 < len(rest):
+            # Nov 11, 2026, v54, Phase 4 doctrinal profile:
+            # the pastor's own statement, read from a file
+            # (never a log line, never a pack). A missing or
+            # unreadable file means no profile, not a failure.
+            doctrinal_file = rest[i + 1]
+            i += 2
+        elif arg == "--lang" and i + 1 < len(rest):
+            # Nov 11, 2026, v53: --lang es runs the whole
+            # pipeline in Spanish (prompts, lists, checks).
+            set_lang(rest[i + 1])
+            i += 2
         elif arg.startswith("--"):
             print(f"unknown option: {arg}", file=sys.stderr)
             return 2
@@ -920,8 +1177,9 @@ def main():
         # Nov 3, 2026, generation step display: observability
         # only, no prompt, temp, or gate changes. Section
         # order is adult Mon, kid Mon, adult Tue, kid Tue,
-        # and so on through Fri, then leader questions, so
-        # section 0 is adult Monday and section 10 is leader.
+        # and so on through the last day, then leader
+        # questions, so section 0 is adult Monday and section
+        # 2N is leader, where N is the day count (3, 5, or 7).
         # A failed write never fails a section.
         if not progress_file or not progress_total:
             return
@@ -933,7 +1191,23 @@ def main():
 
     refs = refs_csv.split(",")
     angles = angles_csv.split(",")
-    assert len(refs) == 5 and len(angles) == 5
+    # Nov 11, 2026, v54, Phase 4 flexible length: a pack is
+    # 3, 5, or 7 days, one ref and one angle per day. The
+    # day list is the first N of the full week.
+    if len(refs) not in (3, 5, 7) or len(angles) != len(refs):
+        print(f"generate_sections needs 3, 5, or 7 refs and the same count of angles, got {len(refs)} refs and {len(angles)} angles", file=sys.stderr)
+        return 2
+    days = DAYS7[:len(refs)]
+    # Nov 11, 2026, v54, Phase 4 doctrinal profile: read the
+    # statement once, before any prompt is built, so the
+    # voice block carries it from the first call. No file
+    # means no profile, and the prompts are byte-identical
+    # to v53.
+    if doctrinal_file:
+        try:
+            set_doctrinal_profile(Path(doctrinal_file).read_text(encoding="utf-8"))
+        except Exception:
+            pass
     store = json.loads(Path(store_path).read_text(encoding="utf-8"))
     verse_text = {r: resolve_verse_text(r, store) for r in refs}
     # Step 7.5 Phase B: Phos context bundle, if given. Map ref -> bundle entry.
@@ -965,7 +1239,14 @@ def main():
 
     def _filter_commentary(excerpt, verse_text):
         verse_low = (verse_text or "").lower()
-        names_son = ("son of god" in verse_low or "jesus" in verse_low or "christ" in verse_low)
+        # Nov 11, 2026, v53: in Spanish mode the verse is
+        # RV1909/Español Sencillo, so the Son/Jesus/Christ
+        # check uses the folded Spanish names.
+        if LANG == "es":
+            verse_low = _fold(verse_low)
+            names_son = ("hijo de dios" in verse_low or "jesus" in verse_low or "cristo" in verse_low)
+        else:
+            names_son = ("son of god" in verse_low or "jesus" in verse_low or "christ" in verse_low)
         sentences = _re.split(r"(?<=[.!?])\s+", excerpt or "")
         kept = []
         dropped = 0
@@ -1036,48 +1317,71 @@ def main():
         # fallback would reintroduce the flaws v40 is fixing and the
         # pastor would not know.
         _phos = phos_lines(ref)
-        _notes_lines = [
-            "Write study notes for one Bible verse, for a family devotional. Output JSON ONLY, no markdown, no explanation.",
-            f"Passage: {passage}. Verse: <VERSE>{ref} - {verse_text[ref]}</VERSE>",
-            f"Angle: {angle}.",
-            "Study material (public-domain commentary and word notes):",
-            _phos if _phos else "(No study material for this verse. Use the verse only.)",
-        ]
-        _notes_lines.append(VOICE_BLOCK)
-        _notes_lines.append(
-            "Write four fields. Each is a plain-language summary of the study material above. Do not add interpretations or applications that are not in the material. Do not use old-fashioned or formal words. If the material gives a Greek or Hebrew word, give ONLY its plain English meaning in the gloss field; never write a Greek or Hebrew word, or a word in another language, anywhere in your output."
-            " \"says\": what this verse says, in 1-2 plain sentences. The fact."
-            # v42, Nov 7, 2026: "means" is redefined as "why God tells
-            # us this." The v41 tightening ("State the truth the verse
-            # teaches... Do not turn it into a rule about things to
-            # avoid doing") did NOT work: the v41 Wednesday COL 3:13
-            # "means" note still said "He wants us to avoid doing
-            # things that irritate each other." The reason is that the
-            # drift is a SOURCE issue, not a model error: the Adam
-            # Clarke commentary for COL 3:13 literally says
-            # "Forbearing one another - Avoid all occasions of
-            # irritating or provoking each other," and the model
-            # faithfully summarized it. A prohibition cannot fix a
-            # faithful summary. So "means" is redefined, not just
-            # tightened: it now asks WHY God tells us this (the reason
-            # / the motive / what it reveals about God, about us, or
-            # about the grace He has shown us), which forces the model
-            # to state the theological truth behind the command, not a
-            # behavioral rule. For COL 3:13, "why" gives "because He
-            # forgave us freely, so we should forgive freely" (the
-            # teaching), not "avoid doing things that irritate" (a
-            # rule). The same redefinition should also help Monday
-            # P1/P2 be more distinct: for MAT 6:14-15, "why" gives the
-            # motive ("because forgiveness is how God relates to us"),
-            # which is more distinct from "says" (the conditional)
-            # than the old "means" was. If the test run shows it does
-            # not work, revert to the v41 wording and accept the drift
-            # as a small edit.
-            " \"means\": why God tells us this, in 1-2 plain sentences. State the reason behind the verse: what it reveals about God, about us, or about the grace He has shown us. A different angle from \"says\", not a restatement of it. Do not turn it into a rule about things to avoid doing."
-            " \"today\": how a family lives this today, in 1-2 plain sentences, with ONE concrete family example tied to the verse's image (not a generic activity)."
-            " \"gloss\": the plain English meaning, in a few words, of any key word in the verse that a family might not know (for example a word like \"trespasses\" or \"complaint\"). If there is no such word, write \"\"."
-            ' JSON shape: {"says": "...", "means": "...", "today": "...", "gloss": "..."}'
-        )
+        if LANG == "es":
+            # Nov 11, 2026, v53: the notes stage writes
+            # Spanish notes from the English Phos material,
+            # so the v37 grounding word-overlap check works
+            # in Spanish (the devotional prompts ground in
+            # these notes, never in the English source).
+            _notes_lines = [
+                "Escribe notas de estudio para un versículo de la Biblia, para un devocional familiar. Responde solo con JSON, sin markdown, sin explicación.",
+                f"Pasaje: {passage}. Versículo: <VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                f"Tema: {angle}.",
+                "Material de estudio (comentario y notas de palabras, de dominio público):",
+                _phos if _phos else "(No hay material de estudio para este versículo. Usa solo el versículo.)",
+            ]
+            _notes_lines.append(voice_block())
+            _notes_lines.append(
+                "Escribe cuatro campos. Cada uno es un resumen en lenguaje sencillo del material de estudio de arriba. No añadas interpretaciones ni aplicaciones que no estén en el material. No uses palabras anticuadas o formales. Si el material da una palabra en griego o en hebreo, da SOLO su significado sencillo en español en el campo gloss; nunca escribas una palabra en griego o en hebreo, ni una palabra en otro idioma, en ninguna parte de tu respuesta."
+                " \"says\": lo que dice este versículo, en 1-2 frases sencillas. El hecho."
+                " \"means\": por qué Dios nos dice esto, en 1-2 frases sencillas. Explica la razón detrás del versículo: lo que revela de Dios, de nosotros, o de la gracia que Él nos ha mostrado. Un ángulo diferente de \"says\", no una repetición. No lo conviertas en una regla sobre cosas que hay que evitar."
+                " \"today\": cómo vive una familia esto hoy, en 1-2 frases sencillas, con UN ejemplo concreto de una familia ligado a la imagen del versículo (no una actividad genérica)."
+                " \"gloss\": el significado sencillo, en pocas palabras, de cualquier palabra clave del versículo que una familia podría no conocer (por ejemplo una palabra como \"ofensas\" o \"queja\"). Si no hay ninguna, escribe \"\"."
+                ' Forma JSON: {"says": "...", "means": "...", "today": "...", "gloss": "..."}'
+            )
+        else:
+            _notes_lines = [
+                "Write study notes for one Bible verse, for a family devotional. Output JSON ONLY, no markdown, no explanation.",
+                f"Passage: {passage}. Verse: <VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                f"Angle: {angle}.",
+                "Study material (public-domain commentary and word notes):",
+                _phos if _phos else "(No study material for this verse. Use the verse only.)",
+            ]
+            _notes_lines.append(VOICE_BLOCK)
+            _notes_lines.append(
+                "Write four fields. Each is a plain-language summary of the study material above. Do not add interpretations or applications that are not in the material. Do not use old-fashioned or formal words. If the material gives a Greek or Hebrew word, give ONLY its plain English meaning in the gloss field; never write a Greek or Hebrew word, or a word in another language, anywhere in your output."
+                " \"says\": what this verse says, in 1-2 plain sentences. The fact."
+                # v42, Nov 7, 2026: "means" is redefined as "why God tells
+                # us this." The v41 tightening ("State the truth the verse
+                # teaches... Do not turn it into a rule about things to
+                # avoid doing") did NOT work: the v41 Wednesday COL 3:13
+                # "means" note still said "He wants us to avoid doing
+                # things that irritate each other." The reason is that the
+                # drift is a SOURCE issue, not a model error: the Adam
+                # Clarke commentary for COL 3:13 literally says
+                # "Forbearing one another - Avoid all occasions of
+                # irritating or provoking each other," and the model
+                # faithfully summarized it. A prohibition cannot fix a
+                # faithful summary. So "means" is redefined, not just
+                # tightened: it now asks WHY God tells us this (the reason
+                # / the motive / what it reveals about God, about us, or
+                # about the grace He has shown us), which forces the model
+                # to state the theological truth behind the command, not a
+                # behavioral rule. For COL 3:13, "why" gives "because He
+                # forgave us freely, so we should forgive freely" (the
+                # teaching), not "avoid doing things that irritate" (a
+                # rule). The same redefinition should also help Monday
+                # P1/P2 be more distinct: for MAT 6:14-15, "why" gives the
+                # motive ("because forgiveness is how God relates to us"),
+                # which is more distinct from "says" (the conditional)
+                # than the old "means" was. If the test run shows it does
+                # not work, revert to the v41 wording and accept the drift
+                # as a small edit.
+                " \"means\": why God tells us this, in 1-2 plain sentences. State the reason behind the verse: what it reveals about God, about us, or about the grace He has shown us. A different angle from \"says\", not a restatement of it. Do not turn it into a rule about things to avoid doing."
+                " \"today\": how a family lives this today, in 1-2 plain sentences, with ONE concrete family example tied to the verse's image (not a generic activity)."
+                " \"gloss\": the plain English meaning, in a few words, of any key word in the verse that a family might not know (for example a word like \"trespasses\" or \"complaint\"). If there is no such word, write \"\"."
+                ' JSON shape: {"says": "...", "means": "...", "today": "...", "gloss": "..."}'
+            )
         _notes_prompt = "\n".join(_notes_lines)
         _n_problem = ""
         for _n_attempt in range(2):
@@ -1101,6 +1405,31 @@ def main():
                 return f"{_k} is too short"
         for _k in ("says", "means", "today", "gloss"):
             if any(ord(_c) > 127 for _c in notes[_k]):
+                # Nov 11, 2026, v53: in Spanish mode, accented
+                # Latin (á é í ó ú ñ ¿ ¡ « ») is the text
+                # itself, not a foreign word. Latin-1 (ord
+                # <= 255) is allowed; Greek/Hebrew (ord >
+                # 255) is still rejected, as is any other
+                # non-Latin script.
+                if LANG == "es" and all(ord(_c) <= 255 for _c in notes[_k]):
+                    continue
+                # Nov 11, 2026, v53, live-pack fix: the Phos
+                # material hands the model the Greek
+                # transliteration ("homologōmen means
+                # confess"), and the 4B copies it into the
+                # gloss even though the prompt forbids any
+                # Greek word, twice in a row - then the whole
+                # pack died on it (job 6246b06f5c1805d0,
+                # Thursday 1JN 1:9). The gloss is OPTIONAL
+                # (empty is a valid value), so a foreign word
+                # in the gloss alone is sanitized to "" and
+                # the notes pass; the quarantine still holds
+                # (the word never reaches the pack) and a
+                # foreign word in says/means/today still
+                # rejects, as the v40 rule requires.
+                if _k == "gloss":
+                    notes["gloss"] = ""
+                    continue
                 return "a field contains a word in another language"
         # Distinctness: the three angles must not share a run of 8
         # or more consecutive words. If they do, the notes call
@@ -1165,7 +1494,13 @@ def main():
         try:
             saved = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             if (saved.get("passage") == passage and saved.get("refs") == refs
-                    and saved.get("angles") == angles):
+                    and saved.get("angles") == angles
+                    # Nov 11, 2026, v53: a checkpoint from
+                    # the other language never resumes. A
+                    # missing language means English (pre-v53
+                    # checkpoints), so English resumes keep
+                    # working after the upgrade.
+                    and saved.get("language", "en") == LANG):
                 checkpoint = saved
                 print(f"Resuming from checkpoint: "
                       f"{len(checkpoint.get('adult', {}))} adult, "
@@ -1181,6 +1516,7 @@ def main():
         checkpoint["passage"] = passage
         checkpoint["refs"] = refs
         checkpoint["angles"] = angles
+        checkpoint["language"] = LANG
         checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # v17: attempt log, for first-pass, repair, and
@@ -1210,19 +1546,32 @@ def main():
     # for punctuation, forbidden words, kid titles, and
     # application questions. Prompts must NOT quote the
     # forbidden terms, or they prime the model to emit them.
-    FORBIDDEN_KID_WORDS = ["magic", "magical", "spell", "witch", "fairy"]
-    STOPWORDS = set("a an the and or of to in on for with by is are was were be been it its this that from as at".split())
-    ACTION_WORDS = set("do plan practice choose start stop share pray rest honor help give listen speak forgive thank celebrate remember follow obey serve".split())
+    # Nov 11, 2026, v53: Spanish lists, same as lib/quality.mjs
+    # section 7b. Accents are folded by norm_text, so the
+    # lists are written without them.
+    if LANG == "es":
+        FORBIDDEN_KID_WORDS = ["magia", "magico", "hechizo", "bruja", "hada"]
+        STOPWORDS = set("el la los las un una unos unas de en y o a con por para que es son fue fueron ser estar como mas pero sus su este esta estos estas eso esa ese aquel aquella mi mis tu tus le les se si no si ya cuando donde cual cuales quien quienes del al lo".split())
+        ACTION_WORDS = set("haz planea practica elige empieza deja comparte ora descansa honra ayuda da escucha habla perdona agradece celebra recuerda sigue obedece sirve".split())
+    else:
+        FORBIDDEN_KID_WORDS = ["magic", "magical", "spell", "witch", "fairy"]
+        STOPWORDS = set("a an the and or of to in on for with by is are was were be been it its this that from as at".split())
+        ACTION_WORDS = set("do plan practice choose start stop share pray rest honor help give listen speak forgive thank celebrate remember follow obey serve".split())
 
     def norm_text(s):
         # v15 fix, found in testing: God's must map to god,
         # not god + s, or a verse-word whitelist fails on
         # every possessive title. Strip possessive first.
+        # Nov 11, 2026, v53: in Spanish mode, fold accents
+        # first ("Amén" -> "amen", "Éxodo" -> "exodo"), so
+        # every word comparison is accent-insensitive.
         s = (s or "").lower().replace("'s", "").replace("’s", "")
+        if LANG == "es":
+            s = _fold(s)
         return re.sub(r"[^a-z0-9 ]+", " ", s).strip()
 
     def check_forbidden(text):
-        low = (text or "").lower()
+        low = norm_text(text)
         for w in FORBIDDEN_KID_WORDS:
             if re.search(rf"\b{re.escape(w)}\b", low):
                 return w
@@ -1233,9 +1582,14 @@ def main():
         # after textPoint, all 5 leader notes. Strip that
         # literal, plus a literal Question mark, before
         # punctuation is added in code.
+        # Nov 11, 2026, v53: Spanish model writes "Punto."
+        # and "Signo de interrogación." the same way.
         s = (s or "").strip()
         s = re.sub(r"\s+Period\.?\s*$", "", s, flags=re.I)
         s = re.sub(r"\s+Question mark\.?\s*$", "", s, flags=re.I)
+        if LANG == "es":
+            s = re.sub(r"\s+Punto\.?\s*$", "", s, flags=re.I)
+            s = re.sub(r"\s+Signo de interrogación\.?\s*$", "", s, flags=re.I)
         return s
 
     # v16: kid title check, fixed from v15. V15 required
@@ -1257,9 +1611,23 @@ def main():
     # Us"). The no-verse-word rule already grounds a
     # title in the verse, so the name ban was redundant.
     # Magic and fantasy words stay banned.
-    BANNED_TITLE_WORDS = set(["magic", "magical", "spell", "witch", "fairy"])
-    WEEKDAYS = set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"])
-    GOD_WORK_VERBS = set(["smiled", "laughed", "cried", "checked", "inspected", "surveyed", "fixed", "corrected", "tested", "graded", "worried", "forgot", "rested", "slept"])
+    # Nov 11, 2026, v53: Spanish lists, folded (no accents).
+    if LANG == "es":
+        BANNED_TITLE_WORDS = set(["magia", "magico", "hechizo", "bruja", "hada"])
+        WEEKDAYS = set(["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"])
+        # Folded, single tokens only: "se preocupó" folds to
+        # "se preocupo" (two tokens), so the verb alone is
+        # listed. "rió" is left out on purpose: it folds to
+        # "rio", the noun "río" (river), which sits next to
+        # "Dios" in ordinary creation sentences ("Dios creó
+        # el río") and would false-flag. "descanso" and
+        # "olvido" keep the same homograph risk as the
+        # English "rested"/"forgot" trade-off.
+        GOD_WORK_VERBS = set(["sonrio", "lloro", "reviso", "inspecciono", "examino", "arreglo", "corrigio", "probo", "califico", "preocupo", "olvido", "descanso", "durmio"])
+    else:
+        BANNED_TITLE_WORDS = set(["magic", "magical", "spell", "witch", "fairy"])
+        WEEKDAYS = set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"])
+        GOD_WORK_VERBS = set(["smiled", "laughed", "cried", "checked", "inspected", "surveyed", "fixed", "corrected", "tested", "graded", "worried", "forgot", "rested", "slept"])
 
     def kid_title_issue(title, verse_text, adult_title):
         # v20: distinguish title failure reasons, so a
@@ -1304,7 +1672,11 @@ def main():
     # This set is ONLY for the anchor check and the anchor
     # repair word list; the kid overlap check keeps the
     # base STOPWORDS, unchanged.
-    ANCHOR_STOPWORDS = STOPWORDS | set("they their them we us our you your he she his her it its this that these those who whom whose what when where why how than then just also now here there down up out over under again once into about after before between through during above below from with without within upon all any some no not only own same so too very can could will would shall should may might must do does did have has had am".split())
+    # Nov 11, 2026, v53: Spanish anchor stopwords (folded).
+    if LANG == "es":
+        ANCHOR_STOPWORDS = STOPWORDS | set("ellos ellas nosotros nosotras ustedes vosotros vosotras yo tu el ella nosotros nosotras ellos ellas me te se nos os lo la los las les mi mis tu tus su sus nuestro nuestra nuestros nuestras este esta estos estas esto eso esa ese aquel aquella quien quienes que cual cuales como cuando donde por que porque si no si tambien solo ya ahora aqui alli abajo arriba afuera adentro otra vez una vez entre durante sobre bajo desde hasta sin con dentro fuera todos todo alguna alguno ninguna ningun mismo misma tan muy puede pueden podria podrian debe deben haber tiene tienen era eran es son fue fueron ser estar hay".split())
+    else:
+        ANCHOR_STOPWORDS = STOPWORDS | set("they their them we us our you your he she his her it its this that these those who whom whose what when where why how than then just also now here there down up out over under again once into about after before between through during above below from with without within upon all any some no not only own same so too very can could will would shall should may might must do does did have has had am".split())
 
     def verse_word_overlap_count(text, verse_text):
         # v29, Nov 5, 2026: the application anchor check.
@@ -1353,9 +1725,12 @@ def main():
 
     def god_work_verb_flag(text, verse_text):
         verse_words = set(norm_text(verse_text).split())
+        # Nov 11, 2026, v53: in Spanish mode the folded
+        # word is "dios", not "god".
+        _god = "dios" if LANG == "es" else "god"
         for sentence in re.split(r"[.!?]+", text or ""):
             low = norm_text(sentence)
-            if "god" in low.split():
+            if _god in low.split():
                 for verb in GOD_WORK_VERBS:
                     if verb in low.split() and verb not in verse_words:
                         return verb
@@ -1372,11 +1747,17 @@ def main():
         # of, then god, God's normalizes to god. Sketch
         # counts, paint does not, narrow scope. Misses
         # draw yourself and God, second object, noted.
+        # Nov 11, 2026, v53: Spanish pattern, same
+        # narrow scope (see fix_draw_god_activity).
         _t = norm_text(activity or "")
+        if LANG == "es":
+            return bool(re.search(r"\b(dibuja|dibujar|dibujando|haz)\b\s+((un|una|el|la|los|las)\s+)?(dibujo\s+(de\s+)?)?(cara\s+de\s+)?(a\s+)?dios\b", _t))
         return bool(re.search(r"\b(draw|drawing|sketch|sketching)\b\s+((a|the|an)\s+)?(picture\s+)?(of\s+)?god\b", _t))
 
     def is_application_question(q):
         low = norm_text(q or "")
+        if LANG == "es":
+            return ("esta semana" in low) or bool(set(low.split()) & ACTION_WORDS)
         return ("this week" in low) or bool(set(low.split()) & ACTION_WORDS)
 
     def normalize(parsed):
@@ -1420,8 +1801,22 @@ def main():
     # with us, may you, may we). A real prayer also closes
     # with Amen. Both are checked here (generation, so the
     # model retries) and in lib/quality.mjs (review).
-    PRAYER_VOCATIVE = ("lord,", "father,", "jesus,", "god,", "o lord", "o god", "dear lord", "dear father", "heavenly father", "lord jesus", "dear god")
-    PRAYER_PETITION = ("we pray", "we ask", "help us", "give us", "grant us", "lead us", "bless us", "bless", "fill us", "guide us", "teach us", "show us", "thank you", "thank thee", "thank god", "praise you", "praise god", "praise jesus", "hear us", "be with us", "may you", "may we")
+    # v30: a prayer that does not address God, or
+    # does not close with Amen, is an issue and the
+    # model retries it. A statement about God is
+    # not a prayer.
+    # Nov 11, 2026, v53: Spanish lists, folded (no
+    # accents), so they match the folded comparison
+    # below. "perdonanos" is the natural Spanish
+    # prayer word (v32's "Apologize" label rule has
+    # no Spanish equivalent: "Perdón" is natural
+    # prayer language, not a label echo).
+    if LANG == "es":
+        PRAYER_VOCATIVE = ("senor,", "padre,", "jesus,", "dios,", "oh senor", "oh dios", "querido senor", "querido padre", "padre celestial", "senor jesus", "querido dios")
+        PRAYER_PETITION = ("oramos", "te pedimos", "ayudanos", "danos", "concedenos", "guianos", "bendicenos", "llenanos", "ensenanos", "muestranos", "gracias", "te damos gracias", "te alabamos", "escuchanos", "quedate con nosotros", "que tu", "que nosotros")
+    else:
+        PRAYER_VOCATIVE = ("lord,", "father,", "jesus,", "god,", "o lord", "o god", "dear lord", "dear father", "heavenly father", "lord jesus", "dear god")
+        PRAYER_PETITION = ("we pray", "we ask", "help us", "give us", "grant us", "lead us", "bless us", "bless", "fill us", "guide us", "teach us", "show us", "thank you", "thank thee", "thank god", "praise you", "praise god", "praise jesus", "hear us", "be with us", "may you", "may we")
     def prayer_addresses_god(text):
         # Word-boundary matching, not substring. A bare
         # substring "grant" matches "granting" ("granting
@@ -1434,21 +1829,32 @@ def main():
         # the comma. "Thank God" and "praise Jesus" are
         # addresses (thanking and praising Him directly),
         # so they are listed, not just "thank you".
+        # Nov 11, 2026, v53: in Spanish mode the text is
+        # folded, so "Ayúdanos" matches "ayudanos".
         low = (text or "").lower()
+        if LANG == "es":
+            low = _fold(low)
         for phrase in PRAYER_VOCATIVE + PRAYER_PETITION:
             if re.search(r"\b" + re.escape(phrase) + r"(?![a-z])", low):
                 return True
         return False
     def prayer_ends_amen(text):
-        return (text or "").strip().rstrip(".!?").rstrip().lower().endswith("amen")
+        # Nov 11, 2026, v53: folded, so "Amén" ends
+        # with "amen" too. English is unaffected.
+        return _fold((text or "").strip().rstrip(".!?").rstrip().lower()).endswith("amen")
 
     # v31, Nov 5, 2026: the P.A.T.H. parts. Each letter is
     # checked with word-boundary matching, the same
     # negative-lookahead rule as prayer_addresses_god, so
     # "grant" does not match "granting" and "thank" in
     # "thankful" still counts (it starts the word).
-    PRAYER_PRAISE_WORDS = ("holy", "praise", "glory", "majesty", "worthy", "almighty", "great", "hallowed", "magnificent", "wonderful", "righteous", "faithful")
-    PRAYER_HELP = ("help us", "give us", "lead us", "guide us", "strengthen", "protect", "grant us", "show us", "teach us", "fill us", "bless us", "keep us", "deliver us", "be with us", "hear us")
+    # Nov 11, 2026, v53: Spanish lists, folded.
+    if LANG == "es":
+        PRAYER_PRAISE_WORDS = ("santo", "alabanza", "gloria", "majestad", "digno", "todopoderoso", "grande", "santificado", "maravilloso", "justo", "fiel")
+        PRAYER_HELP = ("ayudanos", "danos", "guianos", "fortalecenos", "protegenos", "concedenos", "muestranos", "ensenanos", "llenanos", "bendicenos", "guardanos", "libranos", "quedate con nosotros", "escuchanos")
+    else:
+        PRAYER_PRAISE_WORDS = ("holy", "praise", "glory", "majesty", "worthy", "almighty", "great", "hallowed", "magnificent", "wonderful", "righteous", "faithful")
+        PRAYER_HELP = ("help us", "give us", "lead us", "guide us", "strengthen", "protect", "grant us", "show us", "teach us", "fill us", "bless us", "keep us", "deliver us", "be with us", "hear us")
     def _has_word(low, word):
         return re.search(r"\b" + re.escape(word) + r"(?![a-z])", low) is not None
     def prayer_path_parts(text):
@@ -1469,14 +1875,25 @@ def main():
         # list-like, not a natural prayer. The prompt
         # tells the model to say "Thank You for...".
         # H: a help petition.
+        # Nov 11, 2026, v53: Spanish A ("perdónanos",
+        # "hemos fallado", "pecamos", "nos hemos alejado")
+        # and T ("gracias", "agradecidos", "acción de
+        # gracias"), folded. The v32 "Apologize" label
+        # check below has no Spanish equivalent.
         low = (text or "").lower()
+        if LANG == "es":
+            low = _fold(low)
         parts = []
         if any(re.search(r"\b" + re.escape(v) + r"(?![a-z])", low) for v in PRAYER_VOCATIVE) or any(_has_word(low, w) for w in PRAYER_PRAISE_WORDS):
             parts.append("Praise")
-        _apologize = ("forgive us", "forgive me", "forgive our sins", "forgive our failures", "forgive our doubts", "sorry", "we have failed", "we fail", "we sinned", "we have sinned", "we turned away", "we have turned away")
+        if LANG == "es":
+            _apologize = ("perdonanos", "perdoname", "perdona nuestros pecados", "perdona nuestras faltas", "perdona nuestras dudas", "lo siento", "hemos fallado", "fallamos", "hemos pecado", "pecamos", "nos hemos alejado", "nos alejamos")
+            _thanks = ("gracias", "te damos gracias", "agradecidos", "accion de gracias")
+        else:
+            _apologize = ("forgive us", "forgive me", "forgive our sins", "forgive our failures", "forgive our doubts", "sorry", "we have failed", "we fail", "we sinned", "we have sinned", "we turned away", "we have turned away")
+            _thanks = ("thank you", "thank thee", "thank god", "thankful", "thanksgiving")
         if any(re.search(r"\b" + re.escape(a) + r"(?![a-z])", low) for a in _apologize):
             parts.append("Apologize")
-        _thanks = ("thank you", "thank thee", "thank god", "thankful", "thanksgiving")
         if any(re.search(r"\b" + re.escape(t) + r"(?![a-z])", low) for t in _thanks):
             parts.append("Thanks")
         if any(re.search(r"\b" + re.escape(h) + r"(?![a-z])", low) for h in PRAYER_HELP):
@@ -1484,6 +1901,13 @@ def main():
         return parts
 
     def length_issues(kind, parsed, adult_title=None):
+        # Nov 11, 2026, v53: issue strings go into retry
+        # prompts, so they are Spanish in Spanish mode.
+        # Part names map to their Spanish labels, so the
+        # retry names a part the model can use.
+        _PART_ES = {"Praise": "Alabanza", "Apologize": "Perdón", "Thanks": "Acción de gracias", "Help": "Ayuda"}
+        def _iss(en, es):
+            return es if LANG == "es" else en
         if kind == "prayer":
             # v16: prayer over 40 is now an issue too.
             # V15 counted over as 0 issues, so a 56-word
@@ -1491,16 +1915,16 @@ def main():
             issues = []
             pw = wc(parsed.get("prayer"))
             if pw < 30 or pw > 40:
-                issues.append(f"prayer {pw} words, outside 30-40")
+                issues.append(_iss(f"prayer {pw} words, outside 30-40", f"oración {pw} palabras, fuera de 30-40"))
             # v30: a prayer that does not address God, or
             # does not close with Amen, is an issue and the
             # model retries it. A statement about God is
             # not a prayer.
             _pr = parsed.get("prayer") or ""
             if _pr and not prayer_addresses_god(_pr):
-                issues.append("prayer does not address God")
+                issues.append(_iss("prayer does not address God", "la oración no se dirige a Dios"))
             if _pr and not prayer_ends_amen(_pr):
-                issues.append("prayer does not end with Amen")
+                issues.append(_iss("prayer does not end with Amen", "la oración no termina con Amén"))
             # v31: each missing P.A.T.H. part is an issue,
             # so the model retries a prayer that praises but
             # never confesses, or thanks but never asks.
@@ -1508,7 +1932,7 @@ def main():
             if _pr:
                 _missing = [p for p in ("Praise", "Apologize", "Thanks", "Help") if p not in prayer_path_parts(_pr)]
                 for _m in _missing:
-                    issues.append(f"prayer is missing {_m}")
+                    issues.append(_iss(f"prayer is missing {_m}", f"a la oración le falta {_PART_ES[_m]}"))
                 # v32: the word "Apologize" itself is never
                 # natural prayer language (Cross of Jesus 2:
                 # "Apologize, we fail..." echoed the label
@@ -1517,6 +1941,16 @@ def main():
                 # "Forgive us", not "Apologize".
                 if re.search(r"\bapologize\b", _pr.lower()):
                     issues.append("prayer uses the label 'Apologize' instead of asking forgiveness")
+            return issues
+        if kind == "lookahead":
+            # Nov 11, 2026, v51, Phase 1: the Friday
+            # "get ready for Sunday" note. Short on purpose:
+            # 20-35 words, 1-2 sentences, so it reads as a
+            # send-off, not a sixth devotional.
+            issues = []
+            lw = wc(parsed.get("lookAhead"))
+            if lw < 20 or lw > 35:
+                issues.append(_iss(f"lookAhead {lw} words, outside 20-35", f"nota {lw} palabras, fuera de 20-35"))
             return issues
         if kind == "adult":
             # v16: prompt aims 50/50/50/30, code accepts
@@ -1528,21 +1962,21 @@ def main():
             issues = []
             bw = wc(parsed.get("body"))
             if bw < 160:
-                issues.append(f"body {bw} words, need at least 160")
+                issues.append(_iss(f"body {bw} words, need at least 160", f"cuerpo {bw} palabras, necesita al menos 160"))
             if bw > 250:
-                issues.append(f"body {bw} words, over 250")
+                issues.append(_iss(f"body {bw} words, over 250", f"cuerpo {bw} palabras, más de 250"))
             return issues
         if kind == "leader_question":
             issues = []
             q = parsed
             nw = wc(q.get("leaderNote"))
             if nw < 40 or nw > 70:
-                issues.append(f"note {nw} words, outside 40-70")
+                issues.append(_iss(f"note {nw} words, outside 40-70", f"nota {nw} palabras, fuera de 40-70"))
             return issues
         if kind == "kid":
             issues = []
             if wc(parsed.get("retelling")) < 80:
-                issues.append(f"retelling {wc(parsed.get('retelling'))} words, need at least 80")
+                issues.append(_iss(f"retelling {wc(parsed.get('retelling'))} words, need at least 80", f"relato {wc(parsed.get('retelling'))} palabras, necesita al menos 80"))
             # Nov 9, 2026, v48: upper bound. The check used to
             # be minimum-only, so a retelling could run 122-137
             # words (GLM topic pack) and pass with no issue. The
@@ -1552,27 +1986,27 @@ def main():
             # a pack whose every attempt runs long still keeps
             # the shortest one.
             if wc(parsed.get("retelling")) > 120:
-                issues.append(f"retelling {wc(parsed.get('retelling'))} words, over 120")
+                issues.append(_iss(f"retelling {wc(parsed.get('retelling'))} words, over 120", f"relato {wc(parsed.get('retelling'))} palabras, más de 120"))
             # v19: kid within-retelling repetition check.
             # Wed v18 repeated the image sentence 4 times
             # verbatim to reach length. Same sentence more
             # than once, 4 words or more, counts as an issue.
             _sent, _seen, _dup = [], set(), False
             for _s in re.split(r"[.!?]", parsed.get("retelling", "") or ""):
-                _n = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", _s.lower().strip()))
+                _n = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", _fold(_s.lower().strip())))
                 if len(_n.split()) >= 4:
                     if _n in _seen:
                         _dup = True
                         break
                     _seen.add(_n)
             if _dup:
-                issues.append("retelling repeats a sentence")
+                issues.append(_iss("retelling repeats a sentence", "el relato repite una frase"))
             # v15: forbidden check is any occurrence, including
             # negation, e.g. without magic tricks. The retry
             # prompt must use a rule ID, never the term, or
             # it primes the model to emit it again.
             if check_forbidden((parsed.get("title") or "") + " " + (parsed.get("retelling") or "")):
-                issues.append("rule: kid-word-list violated, rewrite using only simple everyday words from the verse")
+                issues.append(_iss("rule: kid-word-list violated, rewrite using only simple everyday words from the verse", "regla: lista de palabras para niños violada, reescribe usando solo palabras sencillas y cotidianas del versículo"))
             # Nov 1, 2026, v4 failure: kid title duplicated the
             # adult title exactly, which blocks lock in the
             # quality gate. Check same-day adult title here;
@@ -1584,16 +2018,19 @@ def main():
                 # the issue string, because issue strings
                 # go into retry prompts, and naming it
                 # primes the model to copy it, as in v20.
-                issues.append("kid title duplicates the adult title, give a different kid title")
+                issues.append(_iss("kid title duplicates the adult title, give a different kid title", "el título para niños duplica el título para adultos, da un título diferente para niños"))
             return issues
         if kind == "leader":
             issues = []
             qs = parsed.get("leaderQuestions", []) or []
-            if len(qs) != 5:
-                issues.append(f"{len(qs)} questions, need 5")
+            # Nov 11, 2026, v54, Phase 4 flexible length: one
+            # question per day, so the expected count is the
+            # day count, not always 5.
+            if len(qs) != len(refs):
+                issues.append(_iss(f"{len(qs)} questions, need {len(refs)}", f"{len(qs)} preguntas, se necesitan {len(refs)}"))
             for i, q in enumerate(qs, 1):
                 if wc(q.get("leaderNote")) < 40:
-                    issues.append(f"note Q{i} {wc(q.get('leaderNote'))} words, need at least 40")
+                    issues.append(_iss(f"note Q{i} {wc(q.get('leaderNote'))} words, need at least 40", f"nota P{i} {wc(q.get('leaderNote'))} palabras, necesita al menos 40"))
             return issues
         return []
 
@@ -1604,6 +2041,8 @@ def main():
         # e.g. v15 Thursday prayer 56 words beating 25 words.
         if kind == "prayer":
             return -abs(wc(parsed.get("prayer")) - 35)
+        if kind == "lookahead":
+            return -abs(wc(parsed.get("lookAhead")) - 27)
         if kind == "adult":
             return -abs(wc(parsed.get("body")) - 200)
         if kind == "kid":
@@ -1643,9 +2082,16 @@ def main():
                 # retry note does NOT name the adult title
                 # to avoid, because naming it primes the
                 # model to copy it, as in v20 Thu.
-                use_prompt = prompt + f"\n\nPrevious output had these problems: {'; '.join(prev_issues)}. Rewrite the same section, fixing those problems, with the same verse and angle, keeping the same JSON shape. Output JSON ONLY."
-                if kind == "kid" and adult_title:
-                    use_prompt += " Do NOT reuse the adult title for the kid title."
+                # Nov 11, 2026, v53: Spanish framing, same
+                # meaning, when --lang es.
+                if LANG == "es":
+                    use_prompt = prompt + f"\n\nLa salida anterior tenía estos problemas: {'; '.join(prev_issues)}. Reescribe la misma sección, corrigiendo esos problemas, con el mismo versículo y tema, manteniendo la misma forma JSON. Responde solo con JSON."
+                    if kind == "kid" and adult_title:
+                        use_prompt += " NO uses el título para adultos como título para niños."
+                else:
+                    use_prompt = prompt + f"\n\nPrevious output had these problems: {'; '.join(prev_issues)}. Rewrite the same section, fixing those problems, with the same verse and angle, keeping the same JSON shape. Output JSON ONLY."
+                    if kind == "kid" and adult_title:
+                        use_prompt += " Do NOT reuse the adult title for the kid title."
             raw = call_model(llm, use_prompt, f"{tag}-len{attempt}", max_tokens=max_tokens, repeat_penalty=repeat_penalty)
             # Nov 1, 2026, v9: per-field shortfall detail, corrected
             # Nov 1, 2026, v10: per-field minimums sum to 180:
@@ -1675,7 +2121,12 @@ def main():
                     if isinstance(q, dict):
                         for k, target in (("goodAnswer", 20), ("textPoint", 10), ("followUp", 10)):
                             if wc(q.get(k)) < target:
-                                split_detail.append(f"Q{qi} {k} {wc(q.get(k))} words, need at least {target} words")
+                                # Nov 11, 2026, v53: Spanish
+                                # detail, same meaning.
+                                if LANG == "es":
+                                    split_detail.append(f"P{qi} {k} {wc(q.get(k))} palabras, necesita al menos {target} palabras")
+                                else:
+                                    split_detail.append(f"Q{qi} {k} {wc(q.get(k))} words, need at least {target} words")
             if kind == "leader_question" and isinstance(raw, dict):
                 for k, target in (("goodAnswer", 20), ("textPoint", 10), ("followUp", 10)):
                     if wc(raw.get(k)) < target:
@@ -1689,7 +2140,11 @@ def main():
                         # v16: retry names the code floor, not
                         # the prompt aim, so a 40-49 field is
                         # accepted, not retried forever.
-                        split_detail.append(f"{k} {wc(raw.get(k))} words, need at least {target} words and at least 2 sentences")
+                        # Nov 11, 2026, v53: Spanish detail.
+                        if LANG == "es":
+                            split_detail.append(f"{k} {wc(raw.get(k))} palabras, necesita al menos {target} palabras y al menos 2 frases")
+                        else:
+                            split_detail.append(f"{k} {wc(raw.get(k))} words, need at least {target} words and at least 2 sentences")
             parsed = normalize(raw)
             score = length_score(kind, parsed, adult_title)
             issues = length_issues(kind, parsed, adult_title)
@@ -1700,16 +2155,22 @@ def main():
             attempts_log.append({"section": tag, "kind": kind, "attempt": attempt + 1, "words": _wc_map.get(kind, 0), "issues": len(issues), "issue_text": "; ".join(issues)})
             # Nov 1, 2026, v12: leader question count is a
             # primary sort key, not just one issue. A
-            # 3-question attempt with 2 note issues must NOT
-            # beat a 5-question attempt with 4 note issues,
-            # as v11 did. A non-5 attempt gets +100 issues,
-            # so a complete 5-question attempt always wins.
+            # short attempt with few note issues must NOT
+            # beat a complete attempt with more note issues,
+            # as v11 did. A non-N attempt gets +100 issues,
+            # so a complete attempt always wins.
             effective_issues = len(issues)
-            if kind == "leader" and len(parsed.get("leaderQuestions", []) or []) != 5:
+            if kind == "leader" and len(parsed.get("leaderQuestions", []) or []) != len(refs):
                 effective_issues += 100
             # v20: kid content issues outrank length
             # issues, same principle as leader count.
-            if kind == "kid" and any("repeats a sentence" in i or "kid-word-list" in i or "duplicates the adult title" in i for i in issues):
+            # Nov 11, 2026, v53: Spanish issue strings,
+            # same three content rules.
+            if LANG == "es":
+                _content_flags = ("repite una frase", "lista de palabras para niños", "duplica el título para adultos")
+            else:
+                _content_flags = ("repeats a sentence", "kid-word-list", "duplicates the adult title")
+            if kind == "kid" and any(any(f in i for f in _content_flags) for i in issues):
                 effective_issues += 100
             if effective_issues < best_issue_count or (effective_issues == best_issue_count and score > best_score):
                 best, best_issue_count, best_score = parsed, effective_issues, score
@@ -1729,13 +2190,23 @@ def main():
         # If it still falls short, the best attempt is kept
         # and flagged, not retried forever.
         try:
-            result = call_model(llm, "\n".join([
-            "Expand ONE paragraph. Output JSON ONLY, no markdown, no explanation.",
-            f"Field: {field_name}.",
-            f"Original paragraph: {field_text}",
-            f"Add about {shortfall_words} words, using only facts already in this paragraph, no new events, names, or verses, keeping at least 2 sentences.",
-            f'JSON shape: {{"{field_name}": "..."}}',
-            ]), f"{tag}-expand-{field_name}", max_tokens=800)
+            if LANG == "es":
+                _lines = [
+                    "Amplía UN párrafo. Responde solo con JSON, sin markdown, sin explicación.",
+                    f"Campo: {field_name}.",
+                    f"Párrafo original: {field_text}",
+                    f"Añade unas {shortfall_words} palabras, usando solo hechos que ya están en este párrafo, sin nuevos eventos, nombres ni versículos, con al menos 2 frases.",
+                    f'Forma JSON: {{"{field_name}": "..."}}',
+                ]
+            else:
+                _lines = [
+                    "Expand ONE paragraph. Output JSON ONLY, no markdown, no explanation.",
+                    f"Field: {field_name}.",
+                    f"Original paragraph: {field_text}",
+                    f"Add about {shortfall_words} words, using only facts already in this paragraph, no new events, names, or verses, keeping at least 2 sentences.",
+                    f'JSON shape: {{"{field_name}": "..."}}',
+                ]
+            result = call_model(llm, "\n".join(_lines), f"{tag}-expand-{field_name}", max_tokens=800)
             return result.get(field_name, "") or field_text
         except Exception as e:
             print(f"Expansion failed for {field_name}: {e}")
@@ -1749,13 +2220,23 @@ def main():
         # code, against the verse, and decides accept.
         # Returns the paraphrase text, or "" on failure.
         try:
-            result = call_model(llm, "\n".join([
-            "Rewrite ONE paragraph in your own words. Output JSON ONLY, no markdown, no explanation.",
-            f"Field: {field_name}.",
-            f"Original paragraph: {field_text}",
-            f"Rewrite it with the same meaning, in your own plain words, in about {target} words, keeping at least 2 sentences. Change the wording and sentence structure, do NOT quote the original paragraph word for word, keep the same facts, no new events, names, or verses.",
-            f'JSON shape: {{"{field_name}": "..."}}',
-            ]), f"{tag}-paraphrase-{field_name}", max_tokens=800)
+            if LANG == "es":
+                _lines = [
+                    "Reescribe UN párrafo con tus propias palabras. Responde solo con JSON, sin markdown, sin explicación.",
+                    f"Campo: {field_name}.",
+                    f"Párrafo original: {field_text}",
+                    f"Reescríbelo con el mismo significado, con tus propias palabras sencillas, en unas {target} palabras, con al menos 2 frases. Cambia las palabras y la estructura de las frases, NO cites el párrafo original palabra por palabra, mantén los mismos hechos, sin nuevos eventos, nombres ni versículos.",
+                    f'Forma JSON: {{"{field_name}": "..."}}',
+                ]
+            else:
+                _lines = [
+                    "Rewrite ONE paragraph in your own words. Output JSON ONLY, no markdown, no explanation.",
+                    f"Field: {field_name}.",
+                    f"Original paragraph: {field_text}",
+                    f"Rewrite it with the same meaning, in your own plain words, in about {target} words, keeping at least 2 sentences. Change the wording and sentence structure, do NOT quote the original paragraph word for word, keep the same facts, no new events, names, or verses.",
+                    f'JSON shape: {{"{field_name}": "..."}}',
+                ]
+            result = call_model(llm, "\n".join(_lines), f"{tag}-paraphrase-{field_name}", max_tokens=800)
             return result.get(field_name, "") or ""
         except Exception as e:
             print(f"Paraphrase failed for {field_name}: {e}")
@@ -1809,6 +2290,11 @@ def main():
     # check below catches a partial copy there too.
     EXAMPLE_50 = "A family can eat dinner together at the same table each night, talk about one thing they are thankful for, and help clear the dishes before bed. This simple routine gives everyone a chance to listen, share, and end the day together in peace."
     EXAMPLE_30 = "In autumn, a gardener can rake fallen leaves into neat piles, spread compost over the soil, and plant bulbs for spring, before watering the beds and storing tools for winter."
+    # Nov 11, 2026, v53: Spanish examples, same word
+    # counts (about 50, about 30). The 50-word example
+    # is the same plain family routine, no craft metaphor.
+    EXAMPLE_50_ES = "Una familia puede cenar junta en la misma mesa cada noche, hablar de una cosa por la que está agradecida y ayudar a recoger los platos antes de acostarse. Esta rutina sencilla da a todos la oportunidad de escuchar, compartir y terminar el día juntos en paz."
+    EXAMPLE_30_ES = "En otoño, un jardinero puede juntar las hojas caídas en montones ordenados, esparcir abono sobre la tierra y plantar bulbos para la primavera, antes de regar las camas y guardar las herramientas para el invierno."
     # v38, Nov 6, 2026: prompt audit. The v37 source block
     # says "Base this paragraph ONLY on the source material
     # below", but the field_defs still named the OLD sources
@@ -1822,21 +2308,43 @@ def main():
     # instruction and the source block agree. The bodyToday
     # anchor (at least one key word from the verse) stays:
     # it is a vocabulary requirement, not a source.
-    ADULT_FIELDS = [
-        ("bodySays", "what this verse says, in your own words, using the source material above", 50, 40, 60, EXAMPLE_50),
-        ("bodyMeans", "what it means, using the source material above, in your own words, do not copy it verbatim", 50, 40, 60, EXAMPLE_50),
-        # v34, Nov 6, 2026: "central image or main idea".
-        # The first Gemini pack forced an image onto a
-        # doctrinal passage (Monday: "a universal standard
-        # of righteousness" as the central image of ROM
-        # 3:9-12). The anchor check below still enforces
-        # the verse words, so the grounding stays; this
-        # only stops forcing an image where there is none.
-        ("bodyToday", "what it means for a family today. Name the central image or main idea from the source material above, then give one concrete family example built around it. The paragraph must use at least one key word from the verse, not a generic family activity", 50, 40, 60, ""),
-        ("bodyClosing", "a closing encouragement, following the body so far below", 30, 24, 36, EXAMPLE_30),
-    ]
+    # Nov 11, 2026, v53: Spanish field definitions, same
+    # targets and bands, same examples (Spanish versions).
+    if LANG == "es":
+        ADULT_FIELDS = [
+            ("bodySays", "lo que dice este versículo, con tus propias palabras, usando el material de estudio de arriba", 50, 40, 60, EXAMPLE_50_ES),
+            ("bodyMeans", "lo que significa, usando el material de estudio de arriba, con tus propias palabras, sin copiarlo palabra por palabra", 50, 40, 60, EXAMPLE_50_ES),
+            ("bodyToday", "lo que significa para una familia hoy. Nombra la imagen central o la idea principal del material de estudio de arriba, y luego da un ejemplo concreto de una familia construido alrededor de ella. El párrafo debe usar al menos una palabra clave del versículo, no una actividad familiar genérica", 50, 40, 60, ""),
+            ("bodyClosing", "un ánimo final, siguiendo el devocional hasta aquí", 30, 24, 36, EXAMPLE_30_ES),
+        ]
+    else:
+        ADULT_FIELDS = [
+            ("bodySays", "what this verse says, in your own words, using the source material above", 50, 40, 60, EXAMPLE_50),
+            ("bodyMeans", "what it means, using the source material above, in your own words, do not copy it verbatim", 50, 40, 60, EXAMPLE_50),
+            # v34, Nov 6, 2026: "central image or main idea".
+            # The first Gemini pack forced an image onto a
+            # doctrinal passage (Monday: "a universal standard
+            # of righteousness" as the central image of ROM
+            # 3:9-12). The anchor check below still enforces
+            # the verse words, so the grounding stays; this
+            # only stops forcing an image where there is none.
+            ("bodyToday", "what it means for a family today. Name the central image or main idea from the source material above, then give one concrete family example built around it. The paragraph must use at least one key word from the verse, not a generic family activity", 50, 40, 60, ""),
+            ("bodyClosing", "a closing encouragement, following the body so far below", 30, 24, 36, EXAMPLE_30),
+        ]
 
-    def call_adult_field(day, ref, angle, field_name, field_def, target, low, high, example, previous_text, include_title, source_block=""):
+    def call_adult_field(day, ref, angle, field_name, field_def, target, low, high, example, previous_text, include_title, source_block="", grounding_source=None):
+        # Nov 11, 2026, v53: grounding_source is the text
+        # the v37 grounding check compares against. In
+        # Spanish mode the sermon-path source block mixes
+        # a Spanish sermon excerpt with English Phos lines,
+        # and a folded "jesus" would match the English
+        # "Jesus" and false-ground a paragraph that never
+        # used the sermon. So the sermon path passes the
+        # sermon excerpt only as the grounding source; the
+        # topic path passes None (its source block is the
+        # Spanish notes, already the right source); the
+        # no-source path passes "" (check skipped).
+        _grounding_source = source_block if grounding_source is None else grounding_source
         best_text, best_issues, best_score, title_out = "", 999, -1, ""
         # v19: prompt-safe issues from the previous
         # attempt, rule IDs only for content, never the
@@ -1844,18 +2352,25 @@ def main():
         # repair prompt does not prime the failure.
         prompt_issues = []
         for attempt in range(3):
-            lines = [
-                "Write ONE adult devotional paragraph. Output JSON ONLY, no markdown, no explanation.",
-                f"Day: {day}. Passage: {passage}. Angle: {angle}.",
-                f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
-            ]
+            if LANG == "es":
+                lines = [
+                    "Escribe UN párrafo devocional para adultos. Responde solo con JSON, sin markdown, sin explicación.",
+                    f"Día: {day_es(day)}. Pasaje: {passage}. Tema: {angle}.",
+                    f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                ]
+            else:
+                lines = [
+                    "Write ONE adult devotional paragraph. Output JSON ONLY, no markdown, no explanation.",
+                    f"Day: {day}. Passage: {passage}. Angle: {angle}.",
+                    f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                ]
             # v25: a rhetorical question affirms, it does
             # not deny. JER 23:29 proved the model reads
             # "Is not My word like fire?" as "not like fire".
             # bodySays only: it sets the meaning the other
             # fields build on.
             if field_name == "bodySays" and is_rhetorical_question(verse_text[ref]):
-                lines.append(RHETORICAL_RULE)
+                lines.append(rhetorical_rule())
             # v37, Nov 6, 2026: source-grounded generation.
             # Every adult field gets the same source block
             # (the sermon excerpt for this verse, if any,
@@ -1875,7 +2390,7 @@ def main():
             # at module level. It goes into every adult-field prompt so
             # the model writes in plain pastoral language from any
             # source, sermon or Phos commentary.
-            lines.append(VOICE_BLOCK)
+            lines.append(voice_block())
             # v39, Nov 6, 2026: anti-repetition (item 2). The v38
             # topic pack repeated the same commentary sentence across
             # a day's paragraphs (Tuesday P1/P2/P3, Wednesday P1/P2,
@@ -1892,9 +2407,15 @@ def main():
             # verbatim copying returns, and if it does, this is
             # reverted to bodyClosing only.
             if field_name != "bodySays" and previous_text:
-                lines.append("Paragraphs already written for this day, for context only. Do not repeat what they say. Add something new, in your own words:")
+                if LANG == "es":
+                    lines.append("Párrafos ya escritos para este día, solo como contexto. No repitas lo que dicen. Añade algo nuevo, con tus propias palabras:")
+                else:
+                    lines.append("Paragraphs already written for this day, for context only. Do not repeat what they say. Add something new, in your own words:")
                 lines.append(previous_text)
-            lines.append(f"Write this paragraph only: {field_name}: {field_def}.")
+            if LANG == "es":
+                lines.append(f"Escribe solo este párrafo: {field_name}: {field_def}.")
+            else:
+                lines.append(f"Write this paragraph only: {field_name}: {field_def}.")
             # v30: bodyToday has no example (empty string).
             # A concrete example in this field gets copied,
             # whatever its topic, so the target word count is
@@ -1902,7 +2423,10 @@ def main():
             # the verse. Fields with an example keep the
             # length-model line.
             if example:
-                lines.append(f"Target: at least {target} words and at least 2 sentences, in the band {low}-{high} words. Example paragraph, about {target} words, generic, not about this passage, for length only, do not copy its content:")
+                if LANG == "es":
+                    lines.append(f"Objetivo: al menos {target} palabras y al menos 2 frases, en la banda de {low}-{high} palabras. Párrafo de ejemplo, de unas {target} palabras, genérico, no sobre este pasaje, solo para la longitud, no copies su contenido:")
+                else:
+                    lines.append(f"Target: at least {target} words and at least 2 sentences, in the band {low}-{high} words. Example paragraph, about {target} words, generic, not about this passage, for length only, do not copy its content:")
                 lines.append(example)
             else:
                 # v38: the example comes from the source
@@ -1912,18 +2436,37 @@ def main():
                 # line said "Build your example from the
                 # verse above", which cancelled it for
                 # bodyToday's example. Now they agree.
-                lines.append(f"Target: at least {target} words and at least 2 sentences, in the band {low}-{high} words. Build your example from the source material above, not from any example paragraph.")
-            lines.append("Do not quote the verse in the paragraph.")
-            if include_title:
-                lines.append("Also give a short title for this day, 2-6 words, about this verse.")
-                lines.append(f'JSON shape: {{"day": "{day}", "title": "...", "scripture": {{"reference": "{ref}"}}, "{field_name}": "..."}}')
+                if LANG == "es":
+                    lines.append(f"Objetivo: al menos {target} palabras y al menos 2 frases, en la banda de {low}-{high} palabras. Construye tu ejemplo a partir del material de estudio de arriba, no de un párrafo de ejemplo.")
+                else:
+                    lines.append(f"Target: at least {target} words and at least 2 sentences, in the band {low}-{high} words. Build your example from the source material above, not from any example paragraph.")
+            if LANG == "es":
+                lines.append("No cites el versículo en el párrafo.")
             else:
-                lines.append(f'JSON shape: {{"{field_name}": "..."}}')
+                lines.append("Do not quote the verse in the paragraph.")
+            if include_title:
+                if LANG == "es":
+                    lines.append("Da también un título corto para este día, de 2-6 palabras, sobre este versículo.")
+                    lines.append(f'Forma JSON: {{"day": "{day}", "title": "...", "scripture": {{"reference": "{ref}"}}, "{field_name}": "..."}}')
+                else:
+                    lines.append("Also give a short title for this day, 2-6 words, about this verse.")
+                    lines.append(f'JSON shape: {{"day": "{day}", "title": "...", "scripture": {{"reference": "{ref}"}}, "{field_name}": "..."}}')
+            else:
+                if LANG == "es":
+                    lines.append(f'Forma JSON: {{"{field_name}": "..."}}')
+                else:
+                    lines.append(f'JSON shape: {{"{field_name}": "..."}}')
             if attempt > 0:
-                _pi = f"{field_name} {wc(best_text)} words, need {low}-{high} words and at least 2 sentences"
+                if LANG == "es":
+                    _pi = f"{field_name} {wc(best_text)} palabras, necesita {low}-{high} palabras y al menos 2 frases"
+                else:
+                    _pi = f"{field_name} {wc(best_text)} words, need {low}-{high} words and at least 2 sentences"
                 if prompt_issues:
-                    _pi += ", problems: " + "; ".join(prompt_issues)
-                lines.append(f"\nPrevious output had these problems: {_pi}. Rewrite the same paragraph, fixing those problems, keeping the same JSON shape. Output JSON ONLY.")
+                    _pi += ", problems: " + "; ".join(prompt_issues) if LANG != "es" else ", problemas: " + "; ".join(prompt_issues)
+                if LANG == "es":
+                    lines.append(f"\nLa salida anterior tenía estos problemas: {_pi}. Reescribe el mismo párrafo, corrigiendo esos problemas, manteniendo la misma forma JSON. Responde solo con JSON.")
+                else:
+                    lines.append(f"\nPrevious output had these problems: {_pi}. Rewrite the same paragraph, fixing those problems, keeping the same JSON shape. Output JSON ONLY.")
                 # v29: the anchor repair needs the verse's
                 # words named, not just a rule ID. A rule ID
                 # alone does not tell the model what to anchor
@@ -1932,7 +2475,10 @@ def main():
                 # at least one of them.
                 if "rule: adult-today-anchor" in prompt_issues:
                     _kw = verse_key_words(verse_text[ref])
-                    _kw_line = f"Anchor this paragraph in the verse: use at least one of these words from the verse: {', '.join(_kw)}." if _kw else "Anchor this paragraph in the verse: use at least one key word from the verse above."
+                    if LANG == "es":
+                        _kw_line = f"Ancla este párrafo en el versículo: usa al menos una de estas palabras del versículo: {', '.join(_kw)}." if _kw else "Ancla este párrafo en el versículo: usa al menos una palabra clave del versículo de arriba."
+                    else:
+                        _kw_line = f"Anchor this paragraph in the verse: use at least one of these words from the verse: {', '.join(_kw)}." if _kw else "Anchor this paragraph in the verse: use at least one key word from the verse above."
                     lines.append(_kw_line)
             try:
                 parsed = call_model(llm, "\n".join(lines), f"{tag}-{day}-{field_name}-len{attempt}", max_tokens=600)
@@ -1988,8 +2534,8 @@ def main():
             # as the kid flag, verb not in verse.
             prompt_issues = []
             if text:
-                _vn = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in verse_text[ref].split()]
-                _tn = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in text.split()]
+                _vn = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in verse_text[ref].split()]
+                _tn = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in text.split()]
                 _vn = [x for x in _vn if x]
                 _tn = [x for x in _tn if x]
                 _vn_chunks = [_vn[_i:_i + 8] for _i in range(max(0, len(_vn) - 7))]
@@ -2028,7 +2574,12 @@ def main():
                 # source is empty (no sermon excerpt and no
                 # Phos for this verse), the check is skipped:
                 # there is nothing to ground in.
-                if source_block and source_word_overlap_count(text, source_block, verse_text[ref]) == 0:
+                # Nov 11, 2026, v53: the check runs against
+                # _grounding_source (the sermon excerpt
+                # only, on the sermon path), not the mixed
+                # source block, so a Spanish paragraph is
+                # never "grounded" by an English Phos word.
+                if _grounding_source and source_word_overlap_count(text, _grounding_source, verse_text[ref]) == 0:
                     issues.append(f"{field_name} does not use any word from the source material")
                     prompt_issues.append("rule: adult-source-grounding")
             attempts_log.append({"section": f"{tag}-{day}-{field_name}", "kind": "adult_field", "attempt": attempt + 1, "words": w, "issues": len(issues), "issue_text": "; ".join(issues)})
@@ -2058,8 +2609,8 @@ def main():
         # work-verb is a warning, and expansion below
         # can lengthen a clean short paraphrase.
         if best_text:
-            _vn_p = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in verse_text[ref].split()]
-            _tn_p = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in best_text.split()]
+            _vn_p = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in verse_text[ref].split()]
+            _tn_p = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in best_text.split()]
             _vn_p = [x for x in _vn_p if x]
             _tn_p = [x for x in _tn_p if x]
             _vn_chunks_p = [_vn_p[_i:_i + 8] for _i in range(max(0, len(_vn_p) - 7))]
@@ -2067,8 +2618,8 @@ def main():
             if _best_verbatim:
                 _para_text = paraphrase_field(best_text, field_name, target, ref)
                 if _para_text:
-                    _vn_q = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in verse_text[ref].split()]
-                    _tn_q = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in _para_text.split()]
+                    _vn_q = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in verse_text[ref].split()]
+                    _tn_q = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in _para_text.split()]
                     _vn_q = [x for x in _vn_q if x]
                     _tn_q = [x for x in _tn_q if x]
                     _vn_chunks_q = [_vn_q[_i:_i + 8] for _i in range(max(0, len(_vn_q) - 7))]
@@ -2098,8 +2649,8 @@ def main():
                 # text is verbatim or work-verb, keep it.
                 _orig_content = god_work_verb_flag(best_text, verse_text[ref]) is not None
                 _exp_content = god_work_verb_flag(expanded, verse_text[ref]) is not None
-                _vn2 = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in verse_text[ref].split()]
-                _tn2 = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in expanded.split()]
+                _vn2 = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in verse_text[ref].split()]
+                _tn2 = [re.sub(r"[^a-z0-9]", "", _fold(x.lower())) for x in expanded.split()]
                 _vn2 = [x for x in _vn2 if x]
                 _tn2 = [x for x in _tn2 if x]
                 _vn_chunks = [_vn2[_i:_i + 8] for _i in range(max(0, len(_vn2) - 7))]
@@ -2138,7 +2689,7 @@ def main():
             sermon_excerpts[_r] = sermon_excerpt_for_ref(sermon_text_full, verse_text.get(_r, ""), _a, _lex_terms)
             if sermon_excerpts[_r]:
                 print(f"Sermon excerpt {_r}: {len(sermon_excerpts[_r].split())} words.", flush=True)
-    for day_index, (day, ref, angle) in enumerate(zip(DAYS, refs, angles)):
+    for day_index, (day, ref, angle) in enumerate(zip(days, refs, angles)):
         report(day_index * 2, f"Building {day}")
         # v40, Nov 7, 2026: the day's source. Built for EVERY day,
         # whether the adult section is rebuilt or reused from
@@ -2157,12 +2708,25 @@ def main():
             # all four fields, the sermon excerpt plus the Phos
             # study material. The sermon is already devotional-shaped,
             # so no notes stage is needed here.
-            _source_block = (
-                "Source material. Base this paragraph ONLY on the source material below (the sermon excerpt and the study material). Summarize what the sermon says about this verse and apply it for a family. You may add one concrete family example, but do not introduce an interpretation, application, or teaching that is not in the source. If the sermon excerpt does not address this verse, use the study material.\n"
-                f"Sermon excerpt:\n{_day_sermon}\n"
-                f"Study material:\n{_day_phos}"
-            )
+            # Nov 11, 2026, v53: Spanish source block, same
+            # meaning. The grounding check (call_adult_field)
+            # still runs against the sermon excerpt only, so
+            # a Spanish paragraph is never "grounded" by an
+            # English Phos word.
+            if LANG == "es":
+                _source_block = (
+                    "Material de estudio. Escribe este párrafo SOLO con base en el material de estudio de abajo (el fragmento del sermón y el material de estudio). Resume lo que el sermón dice sobre este versículo y aplícalo para una familia. Puedes añadir un ejemplo concreto de una familia, pero no introduzcas una interpretación, aplicación o enseñanza que no esté en el material. Si el fragmento del sermón no trata este versículo, usa el material de estudio.\n"
+                    f"Fragmento del sermón:\n{_day_sermon}\n"
+                    f"Material de estudio:\n{_day_phos}"
+                )
+            else:
+                _source_block = (
+                    "Source material. Base this paragraph ONLY on the source material below (the sermon excerpt and the study material). Summarize what the sermon says about this verse and apply it for a family. You may add one concrete family example, but do not introduce an interpretation, application, or teaching that is not in the source. If the sermon excerpt does not address this verse, use the study material.\n"
+                    f"Sermon excerpt:\n{_day_sermon}\n"
+                    f"Study material:\n{_day_phos}"
+                )
             _field_sources = {fn: _source_block for fn, _, _, _, _, _ in ADULT_FIELDS}
+            _grounding_sources = {fn: _day_sermon for fn, _, _, _, _, _ in ADULT_FIELDS}
             _topic_notes = None
             _gloss_line = ""
             _gloss_word = ""
@@ -2202,18 +2766,40 @@ def main():
                 checkpoint.setdefault("notes", {})[ref] = _notes
                 save_checkpoint()
             _gloss = (_notes.get("gloss") or "").strip()
-            _gloss_line = f"\nKey word, plain English meaning: {_gloss}" if _gloss else ""
-            _m = re.match(r"^(?:to\s+)?([A-Za-z'-]+)\s+means\b", _gloss) if _gloss else None
-            _gloss_word = _m.group(1).lower() if _m else (_gloss.split()[0].lower() if _gloss else "")
-            _topic_notes = {
-                "bodySays": f"Notes on what the verse says:\n{_notes['says']}",
-                "bodyMeans": f"Notes on what the verse means:\n{_notes['means']}",
-                "bodyToday": f"Notes on how a family lives this today:\n{_notes['today']}",
-                "bodyClosing": f"What the verse says: {_notes['says']}\nWhat it means: {_notes['means']}\nHow a family lives it: {_notes['today']}",
-            }
+            # Nov 11, 2026, v53: Spanish gloss line and
+            # key-word extraction. The Spanish gloss is
+            # "palabra significa ..." or "palabra: ...",
+            # so the regex accepts "significa" or a colon.
+            # The key word is folded (no accents) for the
+            # used-tracking check below, which folds the
+            # paragraph text the same way.
+            if LANG == "es":
+                _gloss_line = f"\nPalabra clave, significado sencillo en español: {_gloss}" if _gloss else ""
+                _m = re.match(r"^([A-Za-záéíóúñÁÉÍÓÚÑ'-]+)\s*(?:significa|:)", _gloss) if _gloss else None
+                _gloss_word = _fold(_m.group(1).lower()) if _m else (re.sub(r"[^a-záéíóúñ']", "", _fold(_gloss.split()[0].lower())) if _gloss else "")
+            else:
+                _gloss_line = f"\nKey word, plain English meaning: {_gloss}" if _gloss else ""
+                _m = re.match(r"^(?:to\s+)?([A-Za-z'-]+)\s+means\b", _gloss) if _gloss else None
+                _gloss_word = _m.group(1).lower() if _m else (_gloss.split()[0].lower() if _gloss else "")
+            if LANG == "es":
+                _topic_notes = {
+                    "bodySays": f"Notas sobre lo que dice el versículo:\n{_notes['says']}",
+                    "bodyMeans": f"Notas sobre lo que significa el versículo:\n{_notes['means']}",
+                    "bodyToday": f"Notas sobre cómo vive una familia esto hoy:\n{_notes['today']}",
+                    "bodyClosing": f"Lo que dice el versículo: {_notes['says']}\nLo que significa: {_notes['means']}\nCómo lo vive una familia: {_notes['today']}",
+                }
+            else:
+                _topic_notes = {
+                    "bodySays": f"Notes on what the verse says:\n{_notes['says']}",
+                    "bodyMeans": f"Notes on what the verse means:\n{_notes['means']}",
+                    "bodyToday": f"Notes on how a family lives this today:\n{_notes['today']}",
+                    "bodyClosing": f"What the verse says: {_notes['says']}\nWhat it means: {_notes['means']}\nHow a family lives it: {_notes['today']}",
+                }
             _field_sources = None
+            _grounding_sources = None
         else:
             _field_sources = {fn: "" for fn, _, _, _, _, _ in ADULT_FIELDS}
+            _grounding_sources = {fn: "" for fn, _, _, _, _, _ in ADULT_FIELDS}
             _topic_notes = None
             _gloss_line = ""
             _gloss_word = ""
@@ -2245,14 +2831,22 @@ def main():
                     # gloss, so they cannot define it again. The
                     # sermon path and the no-source path use the
                     # pre-built _field_sources dict, unchanged.
-                    _src = (
-                        "Study notes for this verse. Base this paragraph ONLY on the notes below. Summarize them in your own words. Do not add interpretations or applications that are not in the notes.\n"
-                        f"{_topic_notes[field_name]}"
-                        f"{_gloss_line if (_gloss_line and not _word_defined) else ''}"
-                    )
+                    if LANG == "es":
+                        _src = (
+                            "Notas de estudio para este versículo. Escribe este párrafo SOLO con base en las notas de abajo. Resúmelas con tus propias palabras. No añadas interpretaciones ni aplicaciones que no estén en las notas.\n"
+                            f"{_topic_notes[field_name]}"
+                            f"{_gloss_line if (_gloss_line and not _word_defined) else ''}"
+                        )
+                    else:
+                        _src = (
+                            "Study notes for this verse. Base this paragraph ONLY on the notes below. Summarize them in your own words. Do not add interpretations or applications that are not in the notes.\n"
+                            f"{_topic_notes[field_name]}"
+                            f"{_gloss_line if (_gloss_line and not _word_defined) else ''}"
+                        )
                 else:
                     _src = _field_sources[field_name]
-                text, ftitle = call_adult_field(day, ref, angle, field_name, field_def, target, low, high, example, previous, include_title, _src)
+                _gs = _grounding_sources[field_name] if _grounding_sources is not None else None
+                text, ftitle = call_adult_field(day, ref, angle, field_name, field_def, target, low, high, example, previous, include_title, _src, _gs)
                 if include_title and ftitle:
                     title = ftitle
                 fields[field_name] = text
@@ -2261,7 +2855,9 @@ def main():
                 # introduced (and, because the gloss was in this
                 # field's source, defined), and later fields will not
                 # get the gloss line.
-                if _gloss_word and _gloss_word in re.findall(r"[a-z']+", (text or "").lower()):
+                # Nov 11, 2026, v53: the check folds accents in
+                # Spanish mode, so "perdón" matches "perdon".
+                if _gloss_word and _gloss_word in re.findall(r"[a-z']+", _fold((text or "").lower())):
                     _word_defined = True
                 # v25: negation self-check, bodySays only, before
                 # Means/Today/Closing build on it. A meaning flip
@@ -2309,43 +2905,70 @@ def main():
             # length tries, so it cannot be crowded out by
             # the 4 body fields. Body prompt above has no
             # prayer key, JSON shape below is body only.
-            prayer_result = call_with_length_retry("\n".join([
-            "Write ONE prayer. Output JSON ONLY, no markdown, no explanation.",
-            f"Day: {day}. Passage: {passage}. Angle: {angle}.",
-            f"Scripture for context: {ref} - {verse_text[ref]}",
-            f"Adult devotional body for this day, pray about what it says: {a['body']}",
-            # v30, Nov 5, 2026: the prayers were not prayers.
-            # The old prompt said only "pray about the verse",
-            # so the model wrote devotional statements ABOUT
-            # God ("We trust that Jesus lives forever...",
-            # "We lift our eyes to the sky as we wait for
-            # Jesus to return...") that never address Him.
-            # A short prayer to God has a shape: address Him
-            # directly by name, thank Him for what the verse
-            # shows, ask Him to help us live it out, and
-            # close in Jesus' name. The prompt now names
-            # that shape, so the model writes a prayer TO
-            # God, not a statement about Him.
-            # v31, Nov 5, 2026: Jeremiah's P.A.T.H. method,
-            # which mirrors the Lord's Prayer and fits the
-            # app's name (Flockpath). One short clause for
-            # each letter, in order: Praise, Apologize,
-            # Thanks, Help, then close in Jesus' name. The
-            # v30 four-part shape (address, thank, ask,
-            # close) is replaced by P.A.T.H., because the
-            # v30 prayers were still awkward: they restated
-            # the verse in prayer form ("thank you for
-            # revealing that we are all under sin", "the
-            # path of forgiveness shown in this verse") instead
-            # of actually praying. P.A.T.H. forces a real
-            # prayer: praise Him, confess to Him, thank Him,
-            # ask Him, in His name.
-            "Prayer: 30-40 words, at least 2 sentences, in your own words, about this verse and angle and the body above. Use plural voice throughout, us, we, our. Pray about the verse, not the weekday.",
-            "This must be a prayer TO God, not a statement about Him. Use the P.A.T.H. shape, one short clause for each part, in this order: (P) Praise - address God by name and praise His greatness and holiness. (A) Apologize - admit where we fail in light of this verse and ask His forgiveness. (T) Thanks - thank Him for what this verse shows us He has done or provided. (H) Help - ask Him for practical help to live this verse out today. Close with 'In Jesus' name, Amen.' Write it in natural prayer words, not as a labeled list: say 'Forgive us for...', not 'Apologize for...'; say 'Thank You for...', not 'Thanks for...'; say 'Help us...', not 'Help, ...'. Do not write a third-person statement such as 'We trust that Jesus lives forever' or 'We lift our eyes as we wait for Jesus'; those talk about God, they do not pray to Him.",
-            "CRITICAL JSON RULE: prayer must be ONE string, with exactly ONE 'prayer' key. Never repeat the 'prayer' key.",
-            f"JSON shape: {{\"prayer\": \"...\"}}",
-        ]), f"{tag}-{day}-prayer", 300, "prayer")
+            # Nov 11, 2026, v53: Spanish prayer prompt, same
+            # P.A.T.H. shape, same 30-40 word band. The
+            # "say X, not Y" lines use Spanish prayer words:
+            # "Perdónanos por...", not "Perdón por...";
+            # "Ayúdanos a...", not "Ayuda, ...". There is
+            # no Spanish "Apologize" label echo: "Perdón"
+            # is natural prayer language.
+            if LANG == "es":
+                _prayer_lines = [
+                    "Escribe UNA oración. Responde solo con JSON, sin markdown, sin explicación.",
+                    f"Día: {day_es(day)}. Pasaje: {passage}. Tema: {angle}.",
+                    f"Escritura como contexto: {ref} - {verse_text[ref]}",
+                    f"Devocional para adultos de este día, ora sobre lo que dice: {a['body']}",
+                    "Oración: 30-40 palabras, al menos 2 frases, con tus propias palabras, sobre este versículo y este tema y el devocional de arriba. Usa siempre la voz plural, nosotros, nos, nuestro. Ora sobre el versículo, no sobre el día de la semana.",
+                    "Esto debe ser una oración A Dios, no una afirmación sobre Él. Usa la forma P.A.T.H., una frase corta para cada parte, en este orden: (P) Alabanza: dirígete a Dios por su nombre y alaba su grandeza y su santidad. (A) Perdón: reconoce en qué fallamos a la luz de este versículo y pide su perdón. (T) Acción de gracias: dale gracias por lo que este versículo nos muestra que Él ha hecho o ha dado. (H) Ayuda: pídele ayuda práctica para vivir este versículo hoy. Cierra con «En el nombre de Jesús, Amén». Escríbela con palabras naturales de oración, como una sola oración continua, no como una lista con etiquetas: no escribas «Alabanza: ...» ni «Perdón: ...» ni «Acción de gracias: ...» ni «Ayuda: ...». Di «Perdónanos por...», no «Perdón por...». Di «Ayúdanos a...», no «Ayuda, ...». No escribas una afirmación en tercera persona como «Confiamos en que Jesús vive para siempre» o «Levantamos los ojos al cielo mientras esperamos que Jesús vuelva»; eso habla de Dios, no le ora a Él.",
+                    "REGLA CRÍTICA DE JSON: la oración debe ser UNA sola cadena, con exactamente UNA clave «prayer». Nunca repitas la clave «prayer».",
+                    f"Forma JSON: {{\"prayer\": \"...\"}}",
+                ]
+            else:
+                _prayer_lines = [
+                    "Write ONE prayer. Output JSON ONLY, no markdown, no explanation.",
+                    f"Day: {day}. Passage: {passage}. Angle: {angle}.",
+                    f"Scripture for context: {ref} - {verse_text[ref]}",
+                    f"Adult devotional body for this day, pray about what it says: {a['body']}",
+                    "Prayer: 30-40 words, at least 2 sentences, in your own words, about this verse and angle and the body above. Use plural voice throughout, us, we, our. Pray about the verse, not the weekday.",
+                    "This must be a prayer TO God, not a statement about Him. Use the P.A.T.H. shape, one short clause for each part, in this order: (P) Praise - address God by name and praise His greatness and holiness. (A) Apologize - admit where we fail in light of this verse and ask His forgiveness. (T) Thanks - thank Him for what this verse shows us He has done or provided. (H) Help - ask Him for practical help to live this verse out today. Close with 'In Jesus' name, Amen.' Write it in natural prayer words, not as a labeled list: say 'Forgive us for...', not 'Apologize for...'; say 'Thank You for...', not 'Thanks for...'; say 'Help us...', not 'Help, ...'. Do not write a third-person statement such as 'We trust that Jesus lives forever' or 'We lift our eyes as we wait for Jesus'; those talk about God, they do not pray to Him.",
+                    "CRITICAL JSON RULE: prayer must be ONE string, with exactly ONE 'prayer' key. Never repeat the 'prayer' key.",
+                    f"JSON shape: {{\"prayer\": \"...\"}}",
+                ]
+            prayer_result = call_with_length_retry("\n".join(_prayer_lines), f"{tag}-{day}-prayer", 300, "prayer")
             a = {**a, "prayer": prayer_result.get("prayer", "")}
+            # Nov 11, 2026, v51, Phase 1: Saturday looks
+            # forward. The last day before Sunday gets one
+            # short "get ready for Sunday" note, so the week
+            # ends looking ahead instead of stopping. It is a
+            # separate short call with its own length band,
+            # grounded in that day's body, and it never invents
+            # next Sunday's sermon, because that is not known.
+            # Nov 11, 2026, v54, Phase 4 flexible length: the
+            # last day is Wednesday for 3 days, Friday for 5,
+            # Saturday for 7. A 7-day pack ends on Sunday, so
+            # it carries no lookAhead.
+            if day_index == len(refs) - 1 and day != "Sunday":
+                # Nov 11, 2026, v53: Spanish lookahead, same
+                # 20-35 word band, same no-invention rule.
+                if LANG == "es":
+                    _look_lines = [
+                        "Escribe UNA nota corta mirando hacia el domingo. Responde solo con JSON, sin markdown, sin explicación.",
+                        f"Día: {day_es(day)}. Pasaje: {passage}. Tema: {angle}.",
+                        f"Devocional de {day_es(day)} para este día, como contexto: {a['body']}",
+                        "La nota ayuda a la familia a prepararse para el domingo: un ánimo corto para volver el domingo y traer lo que esta semana les enseñó, con palabras sencillas, 20-35 palabras, 1-2 frases. No cites la Escritura. No repitas lo que el devocional de este día ya dice. No inventes de qué tratará el sermón del próximo domingo.",
+                        "Forma JSON: {\"lookAhead\": \"...\"}",
+                    ]
+                else:
+                    _look_lines = [
+                        "Write ONE short note looking ahead to Sunday. Output JSON ONLY, no markdown, no explanation.",
+                        f"Day: {day}. Passage: {passage}. Angle: {angle}.",
+                        f"{day}'s devotional body, for context: {a['body']}",
+                        "The note helps the family get ready for Sunday: one short encouragement to come back on Sunday and bring what this week taught them, in plain words, 20-35 words, 1-2 sentences. Do not quote Scripture. Do not repeat what this day's devotional already says. Do not invent what next Sunday's sermon will be about.",
+                        "JSON shape: {\"lookAhead\": \"...\"}",
+                    ]
+                look_result = call_with_length_retry("\n".join(_look_lines), f"{tag}-{day}-lookahead", 300, "lookahead")
+                if look_result.get("lookAhead"):
+                    a = {**a, "lookAhead": look_result.get("lookAhead")}
             checkpoint.setdefault("adult", {})[day] = a
             save_checkpoint()
         adult.append(a)
@@ -2383,41 +3006,64 @@ def main():
             # retell it. Do not "fix" this back to v15 without
             # Jeremiah's approval; the v13/v14 contamination
             # was a missing instruction, not a missing guard.
-            _kid_lines = [
-            "Write ONE kid devotional for ages 6-10. Output JSON ONLY, no markdown, no explanation.",
-            f"Passage: {passage}. Angle: {angle}.",
-            f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
-            f"Adult devotional for this day, retell this for a child: {a['body']}",
-            ]
-            if is_rhetorical_question(verse_text[ref]):
-                _kid_lines.append(RHETORICAL_RULE)
-            _kid_lines += [
-            "Retell the adult devotional above for a child ages 6-10. Keep its meaning, including its connection to Jesus if it has one. Use your own plain simple words, and give one concrete example from a child's life (school, home, friends, playing) so a child understands why it matters to them. Tell it as one short story, in the order that makes sense for a child.",
-            # Nov 9, 2026, v48: talk TO the child, not AS the child.
-            # The model used to tell the example in first person
-            # ("Once I hid a broken lamp..."), which reads as the
-            # writer's own memory, not a story for a child. Address
-            # the child directly with "you", and use a child in the
-            # example ("Imagine you...") instead of "I".
-            "Talk directly to the child, using 'you'. Do NOT tell the example as if it happened to you: never start with 'Once I...' or 'I remember...' or 'I hid...'. Use a child in the example instead, like 'Imagine you broke a lamp and hid it because you were scared.'",
-            "Write a retelling in about 80-120 words, in your own plain simple words for ages 6-10. Activity: one simple activity a family can do at home in a few minutes.",
-            # v26, Nov 5, 2026, Jeremiah's rule: never ask
-            # children to draw God the Father. Drawing
-            # Jesus is fine. The rule is in the prompt so
-            # the model rarely writes it, and the code
-            # repair below swaps it to Jesus when it does.
-            "Never ask children to draw God the Father. Drawing Jesus is fine.",
-            # v34, Nov 6, 2026: keep it gentle for ages 6-10.
-            # The retelling is about the adult devotional now,
-            # not the verse's ritual steps, so the model does
-            # not dwell on horns and burning fat the way the
-            # v37 Leviticus retelling did. The gentle rule stays
-            # as a guardrail, not as the shaping instruction.
-            "Keep it gentle for ages 6-10: say what happened simply, without graphic detail about blood, killing, or sacrifice.",
-            "Never copy the verse word for word: do not repeat 5 or more words in a row from the verse.",
-            "CRITICAL JSON RULE: retelling must be ONE string, with exactly ONE 'retelling' key. Never repeat the 'retelling' key.",
-            f"JSON shape: {{\"day\": \"{day}\", \"retelling\": \"...\", \"activity\": \"...\"}}",
-            ]
+            # Nov 11, 2026, v53: Spanish kid prompt, same
+            # 80-120 band, same talk-to-the-child rule, same
+            # draw-Jesus-not-God rule, same gentle rule.
+            if LANG == "es":
+                _kid_lines = [
+                    "Escribe UN devocional para niños de 6 a 10 años. Responde solo con JSON, sin markdown, sin explicación.",
+                    f"Pasaje: {passage}. Tema: {angle}.",
+                    f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                    f"Devocional para adultos de este día, cuéntalo de nuevo para un niño: {a['body']}",
+                ]
+                if is_rhetorical_question(verse_text[ref]):
+                    _kid_lines.append(rhetorical_rule())
+                _kid_lines += [
+                    "Cuenta de nuevo el devocional para adultos de arriba para un niño de 6 a 10 años. Mantén su significado, incluyendo su conexión con Jesús si la tiene. Usa tus propias palabras sencillas y claras, y da un ejemplo concreto de la vida de un niño (la escuela, la casa, los amigos, el juego) para que el niño entienda por qué le importa. Cuéntalo como una historia corta, en el orden que tenga sentido para un niño.",
+                    "Háblale directamente al niño, usando «tú». NO cuentes el ejemplo como si te hubiera pasado a ti: nunca empieces con «Una vez yo...» o «Recuerdo...» o «Yo escondí...». Usa a un niño en el ejemplo, como «Imagina que rompiste una lámpara y la escondiste porque tenías miedo».",
+                    "Escribe un relato de unas 80-120 palabras, con tus propias palabras sencillas y claras para niños de 6 a 10 años. Actividad: una actividad sencilla que una familia puede hacer en casa en pocos minutos.",
+                    "Nunca pidas a los niños que dibujen a Dios Padre. Dibujar a Jesús está bien.",
+                    "Sé suave para niños de 6 a 10 años: di lo que pasó con sencillez, sin detalles gráficos sobre sangre, muerte o sacrificio.",
+                    "Nunca copies el versículo palabra por palabra: no repitas 5 o más palabras seguidas del versículo.",
+                    "REGLA CRÍTICA DE JSON: el relato debe ser UNA sola cadena, con exactamente UNA clave «retelling». Nunca repitas la clave «retelling».",
+                    f"Forma JSON: {{\"day\": \"{day}\", \"retelling\": \"...\", \"activity\": \"...\"}}",
+                ]
+            else:
+                _kid_lines = [
+                    "Write ONE kid devotional for ages 6-10. Output JSON ONLY, no markdown, no explanation.",
+                    f"Passage: {passage}. Angle: {angle}.",
+                    f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                    f"Adult devotional for this day, retell this for a child: {a['body']}",
+                ]
+                if is_rhetorical_question(verse_text[ref]):
+                    _kid_lines.append(RHETORICAL_RULE)
+                _kid_lines += [
+                    "Retell the adult devotional above for a child ages 6-10. Keep its meaning, including its connection to Jesus if it has one. Use your own plain simple words, and give one concrete example from a child's life (school, home, friends, playing) so a child understands why it matters to them. Tell it as one short story, in the order that makes sense for a child.",
+                    # Nov 9, 2026, v48: talk TO the child, not AS the child.
+                    # The model used to tell the example in first person
+                    # ("Once I hid a broken lamp..."), which reads as the
+                    # writer's own memory, not a story for a child. Address
+                    # the child directly with "you", and use a child in the
+                    # example ("Imagine you...") instead of "I".
+                    "Talk directly to the child, using 'you'. Do NOT tell the example as if it happened to you: never start with 'Once I...' or 'I remember...' or 'I hid...'. Use a child in the example instead, like 'Imagine you broke a lamp and hid it because you were scared.'",
+                    "Write a retelling in about 80-120 words, in your own plain simple words for ages 6-10. Activity: one simple activity a family can do at home in a few minutes.",
+                    # v26, Nov 5, 2026, Jeremiah's rule: never ask
+                    # children to draw God the Father. Drawing
+                    # Jesus is fine. The rule is in the prompt so
+                    # the model rarely writes it, and the code
+                    # repair below swaps it to Jesus when it does.
+                    "Never ask children to draw God the Father. Drawing Jesus is fine.",
+                    # v34, Nov 6, 2026: keep it gentle for ages 6-10.
+                    # The retelling is about the adult devotional now,
+                    # not the verse's ritual steps, so the model does
+                    # not dwell on horns and burning fat the way the
+                    # v37 Leviticus retelling did. The gentle rule stays
+                    # as a guardrail, not as the shaping instruction.
+                    "Keep it gentle for ages 6-10: say what happened simply, without graphic detail about blood, killing, or sacrifice.",
+                    "Never copy the verse word for word: do not repeat 5 or more words in a row from the verse.",
+                    "CRITICAL JSON RULE: retelling must be ONE string, with exactly ONE 'retelling' key. Never repeat the 'retelling' key.",
+                    f"JSON shape: {{\"day\": \"{day}\", \"retelling\": \"...\", \"activity\": \"...\"}}",
+                ]
             k_ret = call_with_length_retry("\n".join(_kid_lines), f"{tag}-{day}-kid", 1100, "kid", a['title'], repeat_penalty=1.0)
             # v25: kid retelling verbatim repair. Same 8-word
             # window as the adult check and the review warning,
@@ -2502,25 +3148,41 @@ def main():
             # outright, so the model selects instead of
             # recalling, and repeat the list on retry.
             _verse_words = sorted(set(w for w in norm_text(verse_text[ref]).split() if w not in STOPWORDS and w not in BANNED_TITLE_WORDS))
-            _verse_word_line = f"using at least one of these words from the verse: {', '.join(_verse_words)}." if _verse_words else "using at least one word from the verse above."
+            if LANG == "es":
+                _verse_word_line = f"usando al menos una de estas palabras del versículo: {', '.join(_verse_words)}." if _verse_words else "usando al menos una palabra del versículo de arriba."
+            else:
+                _verse_word_line = f"using at least one of these words from the verse: {', '.join(_verse_words)}." if _verse_words else "using at least one word from the verse above."
             for title_attempt in range(3):
-                title_prompt = "\n".join([
-                "Write ONE kid title for ages 6-10. Output JSON ONLY, no markdown, no explanation.",
-                f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
-                f"Kid retelling for this verse: {k_ret.get('retelling', '')}",
-                # v21: do NOT name the adult title text
-                # here, because naming it primes the model
-                # to copy it, as in v20 Thu. Code still
-                # checks duplicate after, with a['title'].
-                "Give a title different from the adult title for this day, do not reuse it.",
-                f"Title: 2-6 words, simple words a child knows, about the verse above, {_verse_word_line}",
-                'JSON shape: {"title": "..."}',
-                ])
+                if LANG == "es":
+                    title_prompt = "\n".join([
+                        "Escribe UN título para niños de 6 a 10 años. Responde solo con JSON, sin markdown, sin explicación.",
+                        f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                        f"Relato para niños de este versículo: {k_ret.get('retelling', '')}",
+                        "Da un título diferente al título para adultos de este día, no lo repitas.",
+                        f"Título: 2-6 palabras, palabras sencillas que un niño conoce, sobre el versículo de arriba, {_verse_word_line}",
+                        'Forma JSON: {"title": "..."}',
+                    ])
+                else:
+                    title_prompt = "\n".join([
+                        "Write ONE kid title for ages 6-10. Output JSON ONLY, no markdown, no explanation.",
+                        f"<VERSE>{ref} - {verse_text[ref]}</VERSE>",
+                        f"Kid retelling for this verse: {k_ret.get('retelling', '')}",
+                        # v21: do NOT name the adult title text
+                        # here, because naming it primes the model
+                        # to copy it, as in v20 Thu. Code still
+                        # checks duplicate after, with a['title'].
+                        "Give a title different from the adult title for this day, do not reuse it.",
+                        f"Title: 2-6 words, simple words a child knows, about the verse above, {_verse_word_line}",
+                        'JSON shape: {"title": "..."}',
+                    ])
                 if title_attempt > 0:
                     # v21: name the actual issue, not
                     # generic title-rule, and never name
                     # the adult title text or banned word.
-                    title_prompt += f"\n\nPrevious title failed rule: {prev_title_issue}. Write a different title, {_verse_word_line}"
+                    if LANG == "es":
+                        title_prompt += f"\n\nEl título anterior falló la regla: {prev_title_issue}. Escribe un título diferente, {_verse_word_line}"
+                    else:
+                        title_prompt += f"\n\nPrevious title failed rule: {prev_title_issue}. Write a different title, {_verse_word_line}"
                 try:
                     title_result = call_model(llm, title_prompt, f"{tag}-{day}-kid-title-a{title_attempt}", max_tokens=200)
                 except Exception as e:
@@ -2553,7 +3215,7 @@ def main():
             save_checkpoint()
         kid.append(k)
 
-    report(10, "Writing leader questions")
+    report(2 * len(refs), "Writing leader questions")
     if checkpoint.get("questions"):
         questions = checkpoint["questions"]
         print("Reusing finished questions section.")
@@ -2572,13 +3234,44 @@ def main():
         # labelled in a list. Application questions are
         # checked in code for an action word or this week,
         # and regenerated once if they lack one.
-        question_specs = [
-            ("observation", "What the verse says, answerable by pointing at the verse", "What does", "What does the verse say happened?"),
-            ("interpretation", "What the verse means, explaining meaning, not just restating it", "What does it mean when", "What does this show about God's character?"),
-            ("interpretation", "What the verse means, a second angle", "How does", "How does this change how we see God?"),
-            ("application", "What the group will DO this week, with a concrete action", "What will you do this week to", "What will you do this week to rest?"),
-            ("application", "What the group will DO this week, a second concrete action", "How can you plan", "How can you plan time this week to help someone?"),
-        ]
+        # Nov 11, 2026, v53: Spanish question specs, same
+        # types and starters, same generic examples.
+        # Nov 11, 2026, v54, Phase 4 flexible length: one
+        # question per day, so the spec list scales with the
+        # day count. The full 7-spec list is observation,
+        # three interpretations, three applications; a 3-day
+        # pack takes one of each, a 5-day pack takes the
+        # v53 five in the same order, a 7-day pack takes all
+        # seven. Each spec is (type, definition, starter,
+        # generic example), and each call still gets ONE type,
+        # ONE verse, ONE starter, never other questions'
+        # drafts.
+        if LANG == "es":
+            question_specs_all = [
+                ("observación", "Lo que dice el versículo, que se puede responder señalando el versículo", "¿Qué dice", "¿Qué dice el versículo que pasó?"),
+                ("interpretación", "Lo que significa el versículo, explicando el significado, no solo repitiéndolo", "¿Qué significa cuando", "¿Qué muestra esto del carácter de Dios?"),
+                ("interpretación", "Lo que significa el versículo, un segundo ángulo", "¿Cómo", "¿Cómo cambia esto la forma en que vemos a Dios?"),
+                ("interpretación", "Lo que significa el versículo, un tercer ángulo", "¿Por qué", "¿Por qué cambia esto la forma en que vivimos?"),
+                ("aplicación", "Lo que el grupo HARÁ esta semana, con una acción concreta", "¿Qué harás esta semana para", "¿Qué harás esta semana para descansar?"),
+                ("aplicación", "Lo que el grupo HARÁ esta semana, una segunda acción concreta", "¿Cómo puedes planear", "¿Cómo puedes planear tiempo esta semana para ayudar a alguien?"),
+                ("aplicación", "Lo que el grupo HARÁ esta semana, una tercera acción concreta", "¿Qué paso darás esta semana para", "¿Qué paso darás esta semana para ayudar a un vecino?"),
+            ]
+        else:
+            question_specs_all = [
+                ("observation", "What the verse says, answerable by pointing at the verse", "What does", "What does the verse say happened?"),
+                ("interpretation", "What the verse means, explaining meaning, not just restating it", "What does it mean when", "What does this show about God's character?"),
+                ("interpretation", "What the verse means, a second angle", "How does", "How does this change how we see God?"),
+                ("interpretation", "What the verse means, a third angle", "Why does", "Why does this change how we live?"),
+                ("application", "What the group will DO this week, with a concrete action", "What will you do this week to", "What will you do this week to rest?"),
+                ("application", "What the group will DO this week, a second concrete action", "How can you plan", "How can you plan time this week to help someone?"),
+                ("application", "What the group will DO this week, a third concrete action", "What is one step you will take this week to", "What is one step you will take this week to help a neighbor?"),
+            ]
+        if len(refs) == 3:
+            question_specs = [question_specs_all[0], question_specs_all[1], question_specs_all[4]]
+        elif len(refs) == 5:
+            question_specs = [question_specs_all[0], question_specs_all[1], question_specs_all[2], question_specs_all[4], question_specs_all[5]]
+        else:
+            question_specs = question_specs_all
         # Nov 5, 2026, demo-pack rebuild: step 13 is the
         # longest section (5 questions x up to 3 length
         # retries), and the old code checkpointed only after
@@ -2611,6 +3304,44 @@ def main():
                 _q_sermon = sermon_excerpts.get(qref, "")
                 _q_notes = (checkpoint.get("notes") or {}).get(qref)
                 _q_phos = phos_lines(qref)
+                # Nov 11, 2026, v53: Spanish leader source
+                # blocks, same verse-and-resource anchor.
+                if LANG == "es":
+                    if _q_sermon:
+                        _q_source = (
+                            "Material de estudio. Esta pregunta debe estar anclada en el versículo de arriba Y en el material de estudio de abajo (el fragmento del sermón y el material de estudio). Usa las propias palabras del versículo para el lenguaje de la pregunta, y usa el material de estudio para entender lo que el versículo significa y para ir más a fondo. No introduzcas un tema o una aplicación que no esté en el versículo y en el material. Si el fragmento del sermón no trata este versículo, usa el material de estudio.\n"
+                            f"Fragmento del sermón:\n{_q_sermon}\n"
+                            f"Material de estudio:\n{_q_phos}"
+                        )
+                    elif _q_notes:
+                        _q_source = (
+                            "Notas de estudio para este versículo. Esta pregunta debe estar anclada en el versículo de arriba Y en las notas de estudio de abajo. Usa las propias palabras del versículo para el lenguaje de la pregunta, y usa las notas de estudio para entender lo que el versículo significa y para ir más a fondo. No introduzcas un tema o una aplicación que no esté en el versículo y en las notas.\n"
+                            f"Notas de estudio:\nLo que dice el versículo: {_q_notes['says']}\nLo que significa: {_q_notes['means']}\nCómo lo vive una familia: {_q_notes['today']}"
+                        )
+                    elif _q_phos:
+                        _q_source = (
+                            "Material de estudio. Esta pregunta debe estar anclada en el versículo de arriba Y en el material de estudio de abajo. Usa las propias palabras del versículo para el lenguaje de la pregunta, y usa el material de estudio para entender lo que el versículo significa y para ir más a fondo. No introduzcas un tema o una aplicación que no esté en el versículo y en el material.\n"
+                            f"Material de estudio:\n{_q_phos}"
+                        )
+                    else:
+                        _q_source = ""
+                    _lp = [
+                        "Escribe UNA pregunta para un grupo pequeño. Responde solo con JSON, sin markdown, sin explicación.",
+                        f"Pasaje: {passage}. Versículo para esta pregunta: <VERSE>{qref} - {verse_text[qref]}</VERSE>",
+                        "Otros versículos del pasaje, solo por referencia, no los cites: " + ", ".join(refs),
+                    ]
+                    if _q_source:
+                        _lp.append(_q_source)
+                    _lp.append(voice_block())
+                    _lp.append("No preguntes por el idioma original como un fin en sí mismo; haz una pregunta que una familia pueda comentar o poner en práctica junta.")
+                    _lp += [
+                        f"Tipo de pregunta: {qtype}. Definición: {qdef}.",
+                        f"Empieza tu pregunta con: {starter}",
+                        f"Ejemplo de este tipo, genérico, no sobre este pasaje: {example}",
+                        "Campos de la nota, cada uno UNA cadena, exactamente UNA clave cada uno: goodAnswer (2 frases, unas 20-30 palabras, cómo suena una buena respuesta, en tercera persona, describiendo lo que diría una buena respuesta. NO respondas la pregunta tú mismo en primera persona, empezando con «Yo haré...» o «Yo puedo...»), textPoint (1 frase completa, unas 10-20 palabras, diciendo al líder exactamente dónde señalar en el versículo, empezando con «Señala» o «Mira». Nunca copies un fragmento del versículo y nunca escribas solo una referencia como «versículo 39.»), followUp (1 pregunta, unas 10-20 palabras, una pregunta de seguimiento para hacer si el grupo se queda callado).",
+                        'Forma JSON: {"question": "...", "goodAnswer": "...", "textPoint": "...", "followUp": "..."}',
+                    ]
+                    return chr(10).join(_lp)
                 if _q_sermon:
                     _q_source = (
                         "Source material. This question must be anchored to the verse above AND to the source material below (the sermon excerpt and the study material). Use the verse's own words for the question's language, and use the source material to understand what the verse means and to go deeper. Do not introduce a topic or application that is not in the verse and the source. If the sermon excerpt does not address this verse, use the study material.\n"
@@ -2681,7 +3412,9 @@ def main():
             if qtype == "application" and not is_application_question(qnorm.get("question", "")):
                 print(f"Leader Q{qi} application check failed, regenerating once with action starter.")
                 try:
-                    qraw2 = call_with_length_retry(_leader_prompt() + " This must be an application question, with a concrete action the group will do this week.", f"{tag}-questions-q{qi}-app", 1200, "leader_question")
+                    # Nov 11, 2026, v53: Spanish regen line.
+                    _app_suffix = " Esto debe ser una pregunta de aplicación, con una acción concreta que el grupo hará esta semana." if LANG == "es" else " This must be an application question, with a concrete action the group will do this week."
+                    qraw2 = call_with_length_retry(_leader_prompt() + _app_suffix, f"{tag}-questions-q{qi}-app", 1200, "leader_question")
                     qnorm2 = normalize({"leaderQuestions": [qraw2]})["leaderQuestions"][0]
                     if is_application_question(qnorm2.get("question", "")):
                         qnorm = qnorm2
@@ -2692,19 +3425,19 @@ def main():
             done[str(qi)] = qnorm
             checkpoint["questions_partial"] = done
             save_checkpoint()
-        questions = {"leaderQuestions": [done[str(i)] for i in range(1, 6) if str(i) in done]}
+        questions = {"leaderQuestions": [done[str(i)] for i in range(1, len(refs) + 1) if str(i) in done]}
 
     # Overnight Oct 31, 2026, Step 3: auto-repair for leader
-    # questions. The final 4B model returns 3 to 5 questions
-    # when asked for 5 (Genesis gave 3 twice). One targeted
-    # repair call asks for exactly the missing count, about
-    # the passage verses, with existing questions listed as
-    # do-not-repeat. On parse failure it logs and keeps the
-    # original questions, it never crashes the pack, and the
-    # quality gate will still flag a short leader page for a
-    # human rather than silently locking it.
-    if len(questions.get("leaderQuestions", [])) < 5:
-        missing = 5 - len(questions["leaderQuestions"])
+    # questions. The final 4B model returns fewer questions
+    # than asked for (Genesis gave 3 twice when asked for 5).
+    # One targeted repair call asks for exactly the missing
+    # count, about the passage verses, with existing questions
+    # listed as do-not-repeat. On parse failure it logs and
+    # keeps the original questions, it never crashes the pack,
+    # and the quality gate will still flag a short leader page
+    # for a human rather than silently locking it.
+    if len(questions.get("leaderQuestions", [])) < len(refs):
+        missing = len(refs) - len(questions["leaderQuestions"])
         existing_qs = [q["question"] for q in questions["leaderQuestions"]]
         try:
             # v38, Nov 6, 2026: the repair prompt carries the
@@ -2733,14 +3466,27 @@ def main():
                     # reason as the main leader prompt (the v41
                     # questions carried the definition inside the
                     # question, which made them wordy).
-                    _repair_parts.append(f"Study notes for {r}:\nWhat the verse says: {_rn['says']}\nWhat it means: {_rn['means']}\nHow a family lives it: {_rn['today']}")
+                    # Nov 11, 2026, v53: Spanish notes lines.
+                    if LANG == "es":
+                        _repair_parts.append(f"Notas de estudio para {r}:\nLo que dice el versículo: {_rn['says']}\nLo que significa: {_rn['means']}\nCómo lo vive una familia: {_rn['today']}")
+                    else:
+                        _repair_parts.append(f"Study notes for {r}:\nWhat the verse says: {_rn['says']}\nWhat it means: {_rn['means']}\nHow a family lives it: {_rn['today']}")
                 elif phos_lines(r):
-                    _repair_parts.append(f"Study material for {r}:\n{phos_lines(r)}")
+                    if LANG == "es":
+                        _repair_parts.append(f"Material de estudio para {r}:\n{phos_lines(r)}")
+                    else:
+                        _repair_parts.append(f"Study material for {r}:\n{phos_lines(r)}")
             _repair_source = "\n".join(_repair_parts)
-            _repair_lines = [
-                f"Write exactly {missing} MORE small-group questions, no more, no fewer. Output JSON ONLY, no markdown, no explanation.",
-                f"Passage: {passage}. Verses: {', '.join(f'{r} - {verse_text[r]}' for r in refs)}",
-            ]
+            if LANG == "es":
+                _repair_lines = [
+                    f"Escribe exactamente {missing} preguntas MÁS para un grupo pequeño, ni más ni menos. Responde solo con JSON, sin markdown, sin explicación.",
+                    f"Pasaje: {passage}. Versículos: {', '.join(f'{r} - {verse_text[r]}' for r in refs)}",
+                ]
+            else:
+                _repair_lines = [
+                    f"Write exactly {missing} MORE small-group questions, no more, no fewer. Output JSON ONLY, no markdown, no explanation.",
+                    f"Passage: {passage}. Verses: {', '.join(f'{r} - {verse_text[r]}' for r in refs)}",
+                ]
             if _repair_source:
                 # v39, Nov 6, 2026: same verse-and-resource anchor as
                 # the main leader prompt, plus the voice block, so a
@@ -2748,17 +3494,31 @@ def main():
                 # paraphrase either. v40, Nov 7, 2026: the resource
                 # is the study notes on the topic path (or the study
                 # material where there are no notes).
-                _repair_lines.append("Anchor each question to its verse AND to the study notes or study material below for that verse. Use the verse's own words for the question's language, and use the study notes or study material to understand what the verse means and to go deeper. Do not add interpretations or applications that are not in the verse and the notes or material.")
-                _repair_lines.append(VOICE_BLOCK)
-                _repair_lines.append("Do not ask about the original language as an end in itself; ask a question a family can discuss or act on together.")
+                if LANG == "es":
+                    _repair_lines.append("Ancla cada pregunta en su versículo Y en las notas de estudio o el material de estudio de abajo para ese versículo. Usa las propias palabras del versículo para el lenguaje de la pregunta, y usa las notas de estudio o el material de estudio para entender lo que el versículo significa y para ir más a fondo. No añadas interpretaciones ni aplicaciones que no estén en el versículo y en las notas o el material.")
+                    _repair_lines.append(voice_block())
+                    _repair_lines.append("No preguntes por el idioma original como un fin en sí mismo; haz una pregunta que una familia pueda comentar o poner en práctica junta.")
+                else:
+                    _repair_lines.append("Anchor each question to its verse AND to the study notes or study material below for that verse. Use the verse's own words for the question's language, and use the study notes or study material to understand what the verse means and to go deeper. Do not add interpretations or applications that are not in the verse and the notes or material.")
+                    _repair_lines.append(VOICE_BLOCK)
+                    _repair_lines.append("Do not ask about the original language as an end in itself; ask a question a family can discuss or act on together.")
                 _repair_lines.append(_repair_source)
-            _repair_lines += [
-                "Do NOT repeat any of these existing questions, and do NOT repeat each other:",
-                *[f"- {q}" for q in existing_qs],
-                "Each new question must start differently from the existing questions and from each other.",
-                "Each leaderNote must be 40-70 words: what a good answer sounds like, where to point in the text, and one follow-up question.",
-                '{"leaderQuestions": [{"question": "...", "leaderNote": "..."}]}',
-            ]
+            if LANG == "es":
+                _repair_lines += [
+                    "NO repitas ninguna de estas preguntas existentes, y NO se repitan entre sí:",
+                    *[f"- {q}" for q in existing_qs],
+                    "Cada pregunta nueva debe empezar de forma diferente a las preguntas existentes y a las demás.",
+                    "Cada leaderNote debe tener 40-70 palabras: cómo suena una buena respuesta, dónde señalar en el texto, y una pregunta de seguimiento.",
+                    '{"leaderQuestions": [{"question": "...", "leaderNote": "..."}]}',
+                ]
+            else:
+                _repair_lines += [
+                    "Do NOT repeat any of these existing questions, and do NOT repeat each other:",
+                    *[f"- {q}" for q in existing_qs],
+                    "Each new question must start differently from the existing questions and from each other.",
+                    "Each leaderNote must be 40-70 words: what a good answer sounds like, where to point in the text, and one follow-up question.",
+                    '{"leaderQuestions": [{"question": "...", "leaderNote": "..."}]}',
+                ]
             extra = call_model(llm, "\n".join(_repair_lines), f"{tag}-questions-repair", max_tokens=1800)
             seen = set(existing_qs)
             for q in extra.get("leaderQuestions", []):
@@ -2788,8 +3548,16 @@ def main():
             # sentence of the answer. Brackets were not
             # used: in study material they read as an
             # editorial insertion, not a direction.
-            if _note and not _note.endswith(f"(Read {_ref}.)"):
-                _q["leaderNote"] = f"{_note} (Read {_ref}.)"
+            # Nov 11, 2026, v53: Spanish "(Lee ...)" for
+            # Spanish packs. The quality gate strips this
+            # trailing sentence before counting note words
+            # (see lib/quality.mjs, updated the same day).
+            if LANG == "es":
+                if _note and not _note.endswith(f"(Lee {_ref}.)"):
+                    _q["leaderNote"] = f"{_note} (Lee {_ref}.)"
+            else:
+                if _note and not _note.endswith(f"(Read {_ref}.)"):
+                    _q["leaderNote"] = f"{_note} (Read {_ref}.)"
     checkpoint["questions"] = questions
     checkpoint.pop("questions_partial", None)
     save_checkpoint()
@@ -2814,6 +3582,21 @@ def main():
         elif sermon_text_full:
             print(f"Sermon text too short for a snapshot ({len(sermon_text_full.split())} words, needs {SERMON_MIN_WORDS}); no snapshot.", flush=True)
 
+    # Nov 11, 2026, v54, Phase 4 doctrinal profile: one
+    # advisory check after generation, only when the pastor
+    # wrote a statement. It reads the finished adult bodies
+    # against the statement and returns review-only warnings;
+    # it never blocks and never rewrites. A failed check
+    # returns no warnings and the pack still builds.
+    doctrinal_warnings = []
+    if DOCTRINAL_PROFILE:
+        try:
+            doctrinal_warnings = check_doctrinal_profile(llm, DOCTRINAL_PROFILE, adult, f"{tag}-doctrinal")
+            if doctrinal_warnings:
+                print(f"Doctrinal check: {len(doctrinal_warnings)} advisory warning(s) for review.", flush=True)
+        except Exception as _d_e:
+            print(f"Doctrinal check failed ({_d_e}), continuing without warnings.", flush=True)
+
     # Nov 2, 2026, pastor decision: original choruses are
     # REMOVED. The model-built choruses were not good enough
     # to sing, and a bad song hurts trust more than no song.
@@ -2826,7 +3609,13 @@ def main():
     # old packs do not break.
     draft = {
         "id": tag.lower(),
-        "title": f"{passage} Family Pack",
+        # Nov 11, 2026, v53: Spanish title and coloring,
+        # and the language stamp, so every downstream
+        # step (quality, PDF, review) knows this pack
+        # is Spanish. The day enum stays English in
+        # both languages, for schema compatibility.
+        "title": f"Paquete familiar: {passage}" if LANG == "es" else f"{passage} Family Pack",
+        "language": LANG,
         "passage": passage,
         "pastorName": "Sample Pastor",
         "church": "Sample Church",
@@ -2835,8 +3624,8 @@ def main():
         "kidDevotionals": kid,
         "leaderQuestions": questions["leaderQuestions"],
         "coloring": {
-            "title": f"{passage} Coloring",
-            "description": f"A coloring page for {passage}.",
+            "title": f"Colorear: {passage}" if LANG == "es" else f"{passage} Coloring",
+            "description": f"Una página para colorear de {passage}." if LANG == "es" else f"A coloring page for {passage}.",
             # Nov 1, 2026: PNG library id, not the old SVG id.
             # The PDF builder and review page fall back to
             # matchColoring() if this id is ever stale.
@@ -2846,6 +3635,13 @@ def main():
     if sermon_snapshot:
         draft["sermonSnapshot"] = sermon_snapshot
         draft["sermonText"] = sermon_text_full
+    # Nov 11, 2026, v54: the doctrinal warnings ride on the
+    # draft as review-only metadata, like the hymn candidates.
+    # They are advisory notes for the pastor, never printed
+    # in a pack: the lock schema does not know the field, so
+    # lockPack strips it from the locked pack.
+    if doctrinal_warnings:
+        draft["doctrinalWarnings"] = doctrinal_warnings
     if phos_devotionals:
         draft["classicDevotional"] = phos_devotionals[0]
     # Nov 2, 2026, denomination labels: carry the bundle's voices

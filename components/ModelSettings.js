@@ -27,6 +27,17 @@ import { useEffect, useState } from "react";
 // found). OpenRouter is now the recommended API option: $5 of
 // credits at openrouter.ai covers hundreds of packs. The setup is
 // the same shape as Grok and Google: paste the key, test it, save.
+//
+// Nov 17, 2026, v58 (OpenRouter OAuth sign-in, PKCE): the pastor
+// can also sign in with OpenRouter instead of pasting a key. The
+// button goes to /api/model/openrouter-oauth?start=1, which
+// redirects to openrouter.ai/auth; OpenRouter sends them back,
+// the server exchanges the code for a key, and stores it exactly
+// where a pasted key goes. The paste flow below stays untouched
+// as the fallback. Sign-in only removes the key-pasting step:
+// the pastor still needs an OpenRouter account and paid credits
+// (see the credits note in the OpenRouter section). The full key
+// is never shown back to the browser, only a masked hint.
 
 export default function ModelSettings() {
   const [backend, setBackend] = useState("local");
@@ -43,8 +54,34 @@ export default function ModelSettings() {
   const [testResult, setTestResult] = useState("");
   const [testError, setTestError] = useState("");
   const [testing, setTesting] = useState(false);
+  const [oauthNote, setOauthNote] = useState("");
+  const [oauthError, setOauthError] = useState("");
   const [saved, setSaved] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    // Nov 17, 2026, v58: the OAuth callback lands back on
+    // /packs with ?openrouter=connected (or denied / error).
+    // Read it once, show it, then clean the URL so a refresh
+    // does not repeat the message.
+    const q = new URLSearchParams(window.location.search);
+    const flag = q.get("openrouter");
+    if (flag === "connected") {
+      setOauthNote("Signed in with OpenRouter. Your key is saved, and OpenRouter is ready to use.");
+    } else if (flag === "denied") {
+      setOauthError("OpenRouter sign-in was cancelled. You can sign in again, or paste a key below instead.");
+    } else if (flag === "error") {
+      const reason = q.get("reason");
+      setOauthError(
+        reason === "expired"
+          ? "That sign-in link expired (they last 10 minutes). Sign in with OpenRouter again, or paste a key below instead."
+          : "OpenRouter sign-in did not finish. Try signing in again, or paste a key below instead."
+      );
+    }
+    if (flag) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   useEffect(() => {
     fetch("/api/model")
@@ -135,7 +172,7 @@ export default function ModelSettings() {
   }
 
   return (
-    <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 24 }}>
+    <section className="fp-card">
       <h2 style={{ marginTop: 0 }}>Writing model</h2>
       <p>Choose what writes your packs. Local runs the model on this computer, private and offline, but it is the smaller model. OpenRouter, Grok, and Google all use a much stronger model through their service, and they work on any computer. You bring your own key for the one you pick. Change it any time; it affects future packs, never packs already locked.</p>
       <p><strong>Nothing changes until you save.</strong> Picking a provider and testing your key do not switch anything yet. Click <strong>Save writing model</strong> below to make your choice active.</p>
@@ -157,12 +194,22 @@ export default function ModelSettings() {
         {backend === "openrouter" && (
           <div style={{ borderTop: "1px solid #eee", paddingTop: 12, marginBottom: 12 }}>
             <p><strong>Get your OpenRouter key.</strong> OpenRouter is paid, but a pack costs about $0.01, so $5 of credits covers hundreds of packs. Sign up at openrouter.ai, add credits, and make a key.</p>
+            <p>
+              <a href="/api/model/openrouter-oauth?start=1" style={{ display: "inline-block", padding: "8px 14px", fontSize: 15, border: "1px solid #2B2E6F", borderRadius: 6, textDecoration: "none" }}>
+                Sign in with OpenRouter
+              </a>
+            </p>
+            <p style={{ marginTop: 4 }}>Signing in takes you to openrouter.ai to approve Flockpath, then brings you back here with your key saved. No copying and pasting. Or paste a key below instead - either way works.</p>
+            {oauthNote && <p><strong>Signed in.</strong> {oauthNote}</p>}
+            {oauthError && <p style={{ color: "darkred" }}>{oauthError}</p>}
+            <p><strong>About credits.</strong> Signing in does not pay for anything: you still need an OpenRouter account with paid credits. The smallest top-up is $5, and a $5 top-up costs $5.80 after the 5.5% card fee. That $5 covers about 500 packs. The free tier cannot build a pack: free models are capped at 50 requests a day, and one pack takes about 64 calls.</p>
             <ol>
               <li>Go to <a href="https://openrouter.ai" target="_blank" rel="noreferrer">openrouter.ai</a> and sign up with Google or email.</li>
               <li>Add credits (your profile, then <strong>Credits</strong>). $5 is plenty to start.</li>
               <li>Open <strong>Keys</strong>, then <strong>Create Key</strong>, and copy the key and paste it below.</li>
             </ol>
             <p>Your key stays on this computer only. It is never in a pack, never in a log, and never sent anywhere except to OpenRouter when a pack is written.</p>
+            <p><strong>Or paste a key instead.</strong></p>
             <label style={{ display: "block", marginBottom: 6 }}>
               OpenRouter API key
               <input

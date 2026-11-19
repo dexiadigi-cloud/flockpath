@@ -23,7 +23,10 @@ export async function POST(request) {
   const id = String(body.id ?? "").trim();
   if (!id) return Response.json({ ok: false, error: "Pack id required." }, { status: 400 });
   const entry = loadLibrary().find((e) => e.id === id && e.email === s.email);
-  if (!entry?.pack) return Response.json({ ok: false, error: "Locked pack not found in your library." }, { status: 404 });
+  // Nov 11, 2026, v52: this builds a PDF for any pack in the
+  // library, locked or personal. The PDF builder renders by
+  // pack mode, so a member pack gets its label and no code.
+  if (!entry?.pack) return Response.json({ ok: false, error: "Pack not found in your library." }, { status: 404 });
   try {
     const root = process.cwd();
     const tmpDir = path.join(root, "data", "packs-pdf");

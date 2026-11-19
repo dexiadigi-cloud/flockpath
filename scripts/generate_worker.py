@@ -90,6 +90,38 @@ def queued_jobs():
     return jobs
 
 
+def reclaim_stale_running():
+    # Nov 11, 2026, v54, Phase 4: a VM restart (or a killed
+    # worker) used to orphan a job in "running" forever,
+    # because queued_jobs() only takes "queued" and
+    # "interrupted". The v53 live pack had to be marked
+    # "interrupted" by hand twice. On startup the worker
+    # now marks every stale "running" job "interrupted",
+    # so the normal queue picks it up and checkpoint resume
+    # reuses its finished sections. Safe at startup: the
+    # start script refuses to start when the port is in use
+    # and kills the old worker on a clean stop, so no live
+    # worker owns these jobs when this runs. It runs once,
+    # before polling, never inside the loop.
+    reclaimed = []
+    if not JOBS.exists():
+        return reclaimed
+    for path in sorted(JOBS.glob("*.json")):
+        if path.name.endswith("-plan.json"):
+            continue
+        try:
+            job = load_job(path)
+        except Exception:
+            continue
+        if job.get("status") == "running":
+            job["status"] = "interrupted"
+            job["note"] = "Reclaimed by worker startup: was running when the worker stopped, resume from checkpoint."
+            save_job(path, job)
+            reclaimed.append(job.get("id"))
+            print(f"Reclaimed stale running job {job.get('id')} -> interrupted, will resume from checkpoint.", flush=True)
+    return reclaimed
+
+
 def all_jobs():
     jobs = []
     if not JOBS.exists():
@@ -320,6 +352,7 @@ def run_job(path, job):
             "email": job["email"],
             "pastorName": job.get("pastorName", ""),
             "church": job.get("church", ""),
+            "mode": job.get("mode", "pastor"),
             "createdAt": now(),
             "draft": draft,
         }, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -346,6 +379,10 @@ def main():
         only = args[args.index("--job") + 1]
     if loop:
         print("Worker started, polling for queued jobs every 60s.", flush=True)
+    # Nov 11, 2026, v54: reclaim once at startup, before the
+    # first poll, so a job orphaned in "running" by a restart
+    # resumes from checkpoint instead of sitting forever.
+    reclaim_stale_running()
     while True:
         # v32: rewrites first. They are quick (about 2-3
         # minutes) and the pastor is waiting on the review

@@ -16,6 +16,7 @@ Rules, in order:
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,8 +26,15 @@ from generate_sections import MODEL, call_model, is_gemini_backend, is_grok_back
 REWRITE_JOBS = ROOT / "data" / "rewrite-jobs"
 
 
+def _fold(s):
+    # Nov 11, 2026, v53: fold accents so the verbatim check
+    # compares Spanish words exactly (amó -> amo, á -> a),
+    # instead of dropping accented letters.
+    return "".join(c for c in unicodedata.normalize("NFD", s or "") if not unicodedata.combining(c))
+
+
 def norm_words(s):
-    return [re.sub(r"[^a-z0-9]", "", w.lower()) for w in (s or "").split() if re.sub(r"[^a-z0-9]", "", w.lower())]
+    return [re.sub(r"[^a-z0-9]", "", w.lower()) for w in _fold(s).split() if re.sub(r"[^a-z0-9]", "", w.lower())]
 
 
 def has_verbatim_run(paragraph, verse_text):
@@ -42,16 +50,28 @@ def has_verbatim_run(paragraph, verse_text):
     return False
 
 
-def rewrite_paragraph(llm, paragraph, target, tag):
+def rewrite_paragraph(llm, paragraph, target, tag, lang="en"):
     """One paraphrase call, verse NOT in the prompt. Returns the rewritten text, or "" on failure."""
-    try:
-        result = call_model(llm, "\n".join([
+    # Nov 11, 2026, v53: a Spanish rewrite is prompted in
+    # Spanish, so the new paragraph comes back in Spanish.
+    if lang == "es":
+        prompt = "\n".join([
+            "Reescribe UN párrafo con tus propias palabras. Devuelve SOLO JSON, sin markdown, sin explicación.",
+            "Campo: párrafo.",
+            f"Párrafo original: {paragraph}",
+            f"Reescríbelo con el mismo significado, con tus propias palabras sencillas, en unas {target} palabras, con al menos 2 frases. Cambia la redacción y la estructura de las frases, NO cites el párrafo original palabra por palabra, mantén los mismos hechos, sin eventos, nombres ni versículos nuevos.",
+            'Forma JSON: {"paragraph": "..."}',
+        ])
+    else:
+        prompt = "\n".join([
             "Rewrite ONE paragraph in your own words. Output JSON ONLY, no markdown, no explanation.",
             "Field: paragraph.",
             f"Original paragraph: {paragraph}",
             f"Rewrite it with the same meaning, in your own plain words, in about {target} words, keeping at least 2 sentences. Change the wording and sentence structure, do NOT quote the original paragraph word for word, keep the same facts, no new events, names, or verses.",
             'JSON shape: {"paragraph": "..."}',
-        ]), f"{tag}-rewrite-paragraph", max_tokens=800)
+        ])
+    try:
+        result = call_model(llm, prompt, f"{tag}-rewrite-paragraph", max_tokens=800)
         return result.get("paragraph", "") or ""
     except Exception as e:
         print(f"Rewrite failed: {e}")
@@ -72,6 +92,11 @@ def main():
     body = req.get("body", "")
     verse_text = req.get("verseText", "")
     verse_ref = req.get("verseRef", "")
+    # Nov 11, 2026, v53: the request carries its pack's
+    # language, so a Spanish body is rewritten in Spanish.
+    lang = req.get("language") or "en"
+    if lang not in ("en", "es"):
+        lang = "en"
     paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
     # Find the offending paragraphs (8-word verbatim run from the verse).
     offending = [i for i, p in enumerate(paragraphs) if has_verbatim_run(p, verse_text)]
@@ -107,7 +132,7 @@ def main():
         target = max(40, min(60, len(original.split())))
         new_text = ""
         for attempt in range(2):
-            candidate = rewrite_paragraph(llm, original, target, f"rewrite-{req_id}")
+            candidate = rewrite_paragraph(llm, original, target, f"rewrite-{req_id}", lang)
             if candidate and not has_verbatim_run(candidate, verse_text):
                 new_text = candidate
                 break

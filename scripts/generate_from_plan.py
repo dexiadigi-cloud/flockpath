@@ -50,17 +50,27 @@ except Exception:
 
 ROOT = Path(__file__).resolve().parent.parent
 
-def ingest_book(code):
+def ingest_book(code, translation="bsb"):
     # BSB, Nov 1, 2026: all 66 books are prebuilt in
     # data/bsb-<CODE>.json by scripts/build_bsb_store.py from
     # the verified bsb.txt. If a book file is missing, rebuild
     # it, do not fall back to the retired WEB store.
-    store_path = ROOT / f"data/bsb-{code}.json"
+    # Nov 11, 2026, v53: Spanish translations read their
+    # own stores (data/rv1909-<CODE>.json, data/spabes-
+    # <CODE>.json), built by scripts/build_spanish_stores.py
+    # from the verified eBible USFM. RVR1960 is copyrighted
+    # and is never a valid translation here.
+    if translation not in ("bsb", "rv1909", "spabes"):
+        raise SystemExit(f"Unknown translation: {translation}")
+    store_path = ROOT / f"data/{translation}-{code}.json"
     if store_path.exists():
         return json.loads(store_path.read_text(encoding="utf-8"))
-    subprocess.run([sys.executable, "scripts/build_bsb_store.py"], cwd=ROOT, check=True)
+    if translation == "bsb":
+        subprocess.run([sys.executable, "scripts/build_bsb_store.py"], cwd=ROOT, check=True)
+    else:
+        subprocess.run([sys.executable, "scripts/build_spanish_stores.py"], cwd=ROOT, check=True)
     if not store_path.exists():
-        raise SystemExit(f"No BSB store for {code}, even after rebuild")
+        raise SystemExit(f"No {translation} store for {code}, even after rebuild")
     return json.loads(store_path.read_text(encoding="utf-8"))
 
 def run(cmd):
@@ -100,16 +110,36 @@ def main():
             print(f"unknown argument: {arg}", file=sys.stderr)
             return 2
     refs = plan["refs"]
-    assert len(refs) == 5, "Confirmed plan must have exactly 5 refs"
+    # Nov 11, 2026, v54, Phase 4 flexible length: a plan
+    # carries 3, 5, or 7 refs, one per day. Anything else is
+    # a caller error, caught here before any model time.
+    if len(refs) not in (3, 5, 7):
+        raise SystemExit(f"Confirmed plan must have 3, 5, or 7 refs, got {len(refs)}")
+    day_count = len(refs)
+    # Nov 11, 2026, v53: the plan carries the language and
+    # translation (validated by the /api/generate route).
+    # Legacy plans have neither: English + BSB, as before.
+    language = str(plan.get("language") or "en").strip().lower()
+    if language not in ("en", "es"):
+        raise SystemExit(f"Unknown language: {language}")
+    translation = str(plan.get("translation") or "bsb").strip().lower()
+    if translation not in ("bsb", "rv1909", "spabes"):
+        raise SystemExit(f"Unknown translation: {translation}")
+    if language == "en" and translation != "bsb":
+        raise SystemExit(f"English packs use BSB, not {translation}")
+    if language == "es" and translation == "bsb":
+        raise SystemExit("Spanish packs need rv1909 or spabes, not bsb")
     # Nov 3, 2026, generation step display: the pastor sees
     # which step the pack is on, not just "running". Steps are
-    # observability only: bundle, angles when derived, the 11
-    # sections in day order, hymn, finish. Totals: 15 with
-    # derived angles, 14 without. The worker passes the
-    # progress file; without it, no steps are written.
-    deriving_angles = not plan.get("angles") or len(plan["angles"]) != 5
+    # observability only: bundle, angles when derived, the
+    # 2N+1 sections in day order (adult + kid per day, then
+    # leader), hymn, finish. Totals: section_base + 2N + 3
+    # (15 with derived angles, 14 without, for a 5-day pack).
+    # The worker passes the progress file; without it, no
+    # steps are written.
+    deriving_angles = not plan.get("angles") or len(plan["angles"]) != day_count
     section_base = 2 if deriving_angles else 1
-    progress_total = section_base + 13
+    progress_total = section_base + 2 * day_count + 3
 
     def report(step, label):
         if not progress_file:
@@ -124,8 +154,8 @@ def main():
     merged = {}
     for ref in refs:
         code = ref.split(" ", 1)[0]
-        merged.update(ingest_book(code))
-    merged_path = ROOT / f"data/bsb-{tag}-merged.json"
+        merged.update(ingest_book(code, translation))
+    merged_path = ROOT / f"data/{translation}-{tag}-merged.json"
     merged_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"Merged store: {len(merged)} verses")
     # 2. Phos bundle, if all refs are in supported books
@@ -134,7 +164,10 @@ def main():
     # Nov 2, 2026, denomination preset: the plan carries the
     # pastor's denomination (written by the generate route from
     # the local auth database), and the bundle orders that
-    # tradition's voices first. No flag means today's order.
+    # tradition's voices first. Nov 16, 2026, v57 hard filter:
+    # the bundle also drops opt-in voices from every other
+    # tradition. No flag means today's order, with no opt-in
+    # voice passing at all.
     tradition_arg = []
     if plan.get("denomination"):
         tradition_arg = ["--tradition", str(plan["denomination"])]
@@ -148,7 +181,7 @@ def main():
     # model and never invented. Derived angles are verse-text
     # clauses, with lexicon evidence in the derive output.
     angles = plan.get("angles")
-    if not angles or len(angles) != 5:
+    if not angles or len(angles) != day_count:
         report(2, "Finding the week's angles")
         # Nov 3, 2026, Mac test package: the worker runs under
         # system python3 on a pastor's computer, where no
@@ -178,8 +211,26 @@ def main():
         sermon_path = ROOT / f"data/{tag}-sermon.txt"
         sermon_path.write_text(sermon_text, encoding="utf-8")
         sermon_file_arg = ["--sermon-file", str(sermon_path)]
+    # Nov 11, 2026, v54, Phase 4 doctrinal profile: the
+    # pastor's own statement rides to the section generator
+    # as a file, never in a log line and never in a pack.
+    # An absent or blank statement means no steering at all:
+    # the prompts are byte-identical to v53. The file sits
+    # next to the draft, like the sermon file above, and is
+    # local-only, like everything else in data/.
+    doctrinal_file_arg = []
+    doctrinal_text = plan.get("doctrinalStatement")
+    if isinstance(doctrinal_text, str) and doctrinal_text.strip():
+        doctrinal_path = ROOT / f"data/{tag}-doctrinal.txt"
+        doctrinal_path.write_text(doctrinal_text.strip(), encoding="utf-8")
+        doctrinal_file_arg = ["--doctrinal-file", str(doctrinal_path)]
     section_cmd = [sys.executable, "scripts/generate_sections.py", tag, str(merged_path),
-         plan["passage"], ",".join(refs), ",".join(angles), str(draft_path)] + phos_arg + sermon_file_arg
+         plan["passage"], ",".join(refs), ",".join(angles), str(draft_path)] + phos_arg + sermon_file_arg + doctrinal_file_arg
+    # Nov 11, 2026, v53: the language rides to the section
+    # generator, which runs its prompts, lists, and checks
+    # in that language.
+    if language == "es":
+        section_cmd += ["--lang", "es"]
     if progress_file:
         section_cmd += ["--progress-file", progress_file,
                         "--progress-base", str(section_base),
@@ -194,7 +245,29 @@ def main():
     if plan.get("churchLogo"):
         draft["churchLogo"] = plan["churchLogo"]
         draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=1), encoding="utf-8")
-    report(section_base + 12, "Matching a hymn")
+    # Nov 11, 2026, v52, Phase 2 member mode: the plan carries
+    # the account's role. Stamp it on the draft so review, the
+    # lock, and the PDF all see it; a member draft is signed
+    # with the member's first name and carries no church.
+    if plan.get("mode"):
+        draft["mode"] = plan["mode"]
+    if plan.get("memberName"):
+        draft["memberName"] = plan["memberName"]
+    # Nov 11, 2026, v53: stamp the language and translation
+    # on the draft, so review, the lock, the PDF, and the
+    # bridge all know which store filled its verses. The
+    # section generator already stamped language; this is
+    # the translation it does not know. The draft is written
+    # back whenever anything was stamped, not only for
+    # member packs, or the stamps would be lost.
+    draft["language"] = language
+    draft["translation"] = translation
+    # Nov 11, 2026, v54, Phase 4 flexible length: the built
+    # length rides on the draft, so review, the lock, and the
+    # PDF all know whether it is a 3-, 5-, or 7-day pack.
+    draft["dayCount"] = day_count
+    draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=1), encoding="utf-8")
+    report(section_base + 2 * day_count + 2, "Matching a hymn")
     topics = ",".join(plan.get("topics", []))
     # Nov 3, 2026, Mac test package: Hymn Desk is no longer
     # assumed to live in the VM's workspace. A hymn-desk
@@ -208,10 +281,14 @@ def main():
     if not hymn_desk.is_dir():
         hymn_desk = Path.home() / "workspace" / "hymn-desk"
     hymn_script = hymn_desk / "scripts" / "match_hymn.py"
-    hymns_file = hymn_desk / "data" / "hymns.json"
+    # Nov 11, 2026, v53: Spanish packs match against the
+    # Spanish index (15 verified PD hymns), with --lang es.
+    hymns_file = hymn_desk / "data" / ("hymns-es.json" if language == "es" else "hymns.json")
     if topics and hymn_script.exists() and hymns_file.exists():
-        out = subprocess.run([sys.executable, str(hymn_script), ",".join(refs), topics, "--json"],
-                             capture_output=True, text=True)
+        _hymn_cmd = [sys.executable, str(hymn_script), ",".join(refs), topics, "--json"]
+        if language == "es":
+            _hymn_cmd += ["--lang", "es"]
+        out = subprocess.run(_hymn_cmd, capture_output=True, text=True)
         print(out.stdout)
         try:
             candidates = json.loads(out.stdout)
@@ -250,7 +327,7 @@ def main():
     if not draft.get("hymn") and draft.pop("chorus", None) is not None:
         draft_path.write_text(json.dumps(draft, ensure_ascii=False, indent=1), encoding="utf-8")
         print("No hymn match, chorus stripped, no song section.")
-    report(section_base + 13, "Finishing the draft")
+    report(section_base + 2 * day_count + 3, "Finishing the draft")
     if no_lock:
         # Review-before-lock: expand, do not lock, do not
         # quality-gate as a lock gate here. The review page

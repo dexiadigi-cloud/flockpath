@@ -12,16 +12,21 @@ import { BOOK_NAMES } from "../../../lib/refs.mjs";
 // like "James 1:4" into codes first). A verse outside the
 // pack's five days still resolves here, because the store
 // files cover all 66 books.
+// Nov 11, 2026, v53: ?translation=rv1909 (or spabes) reads
+// the Spanish store instead, for a Spanish pack's note verse.
+// Absent means BSB, as before.
 export async function GET(request) {
   const store = await cookies();
   const s = verifySession(store.get("flockpath_session")?.value);
   if (!s) return Response.json({ ok: false, error: "Sign in first." }, { status: 401 });
   const ref = (new URL(request.url).searchParams.get("ref") ?? "").trim();
+  const _tr = (new URL(request.url).searchParams.get("translation") ?? "bsb").trim().toLowerCase();
+  const translation = (_tr === "rv1909" || _tr === "spabes") ? _tr : "bsb";
   const m = ref.match(/^([A-Z0-9]+) (\d+:\d+)$/);
   if (!m || !BOOK_NAMES[m[1]]) {
     return Response.json({ ok: false, error: "That verse reference was not recognized. Use a book and chapter and verse, like James 1:4." }, { status: 400 });
   }
-  const f = path.join(process.cwd(), "data", `bsb-${m[1]}.json`);
+  const f = path.join(process.cwd(), "data", `${translation}-${m[1]}.json`);
   if (!existsSync(f)) return Response.json({ ok: false, error: "No verse store for that book." }, { status: 404 });
   let book;
   try {

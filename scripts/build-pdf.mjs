@@ -33,6 +33,26 @@ const coloringId = pickedFile && existsSync(new URL(`../public/coloring/${picked
   : matchColoring(pack);
 const coloringFile = COLORING_TEMPLATES[coloringId].file;
 
+// Nov 11, 2026, v53: Spanish PDF strings. The pack's
+// language picks every printed label; a legacy pack has no
+// language and prints English, as before. The translation
+// name in the credit lines follows the pack's translation:
+// BSB for English, Reina-Valera 1909 or Español Sencillo
+// 2026 for Spanish. The Spanish strings here are
+// unreviewed by a Spanish-speaking reader; see the
+// reader-review list in the v53 notes.
+const isEs = (pack.language ?? "en") === "es";
+const lang = isEs ? "es" : "en";
+const DAY_ES = { Monday: "lunes", Tuesday: "martes", Wednesday: "miércoles", Thursday: "jueves", Friday: "viernes" };
+const dayName = (d) => (isEs ? (DAY_ES[d] ?? d) : d);
+const TRANSLATION_NAME = { bsb: "Berean Standard Bible", rv1909: "Reina-Valera 1909", spabes: "La Biblia en Español Sencillo 2026" };
+const translationName = TRANSLATION_NAME[pack.translation ?? "bsb"] ?? "Berean Standard Bible";
+// The Español Sencillo 2026 text is public domain; the
+// project asks for a courtesy credit to AudioBiblia.org
+// and its editor Irma Flores, never a CC BY 4.0 label
+// (that license covers the 2018/2019 editions, not 2026).
+const SPABES_CREDIT = "Traducción por AudioBiblia.org, editado por Irma Flores.";
+
 // Escape Typst markup characters in generated prose so a stray
 // # or * in a devotional cannot break the compile or change layout.
 function esc(s) {
@@ -86,35 +106,53 @@ const days = pack.adultDevotionals.map((a, i) => {
   // prose, or a kid title that fell back to the verse
   // reference, never prints as JAS 1:4.
   return `
-= ${esc(a.day)}: ${esc(formatRefsInText(a.title))}
+= ${esc(dayName(a.day))}: ${esc(formatRefsInText(a.title, lang))}
 
-*Scripture: ${esc(formatRef(a.scripture.reference))}*
+*${isEs ? "Escritura" : "Scripture"}: ${esc(formatRef(a.scripture.reference, lang))}*
 #rect(inset: 10pt, stroke: 0.5pt)[${quote(shortenVerse(a.scripture.text))}]
 
-${para(formatRefsInText(a.body))}
+${para(formatRefsInText(a.body, lang))}
 
-_Prayer:_ ${para(formatRefsInText(a.prayer))}
+_${isEs ? "Oración" : "Prayer"}:_ ${para(formatRefsInText(a.prayer, lang))}
+${a.lookAhead ? `\n_${isEs ? "Prepárate para el domingo" : "Get ready for Sunday"}:_ ${para(formatRefsInText(a.lookAhead, lang))}\n` : ""}
+== ${isEs ? "Para niños (6-10 años)" : "For kids (ages 6-10)"}: ${esc(formatRefsInText(k.title, lang))}
 
-== For kids (ages 6-10): ${esc(formatRefsInText(k.title))}
+${para(formatRefsInText(k.retelling, lang))}
 
-${para(formatRefsInText(k.retelling))}
-
-_Activity:_ ${para(formatRefsInText(k.activity))}
+_${isEs ? "Actividad" : "Activity"}:_ ${para(formatRefsInText(k.activity, lang))}
 `;
 }).join("\n#pagebreak()\n");
 
-const questions = pack.leaderQuestions.map((q, i) => `${i + 1}. ${esc(formatRefsInText(q.question))}\n\n${q.leaderNote ? `_Leader note:_ ${para(formatRefsInText(q.leaderNote))}\n` : ""}`).join("\n");
+const questions = pack.leaderQuestions.map((q, i) => `${i + 1}. ${esc(formatRefsInText(q.question, lang))}\n\n${q.leaderNote ? `_${isEs ? "Nota para el líder" : "Leader note"}:_ ${para(formatRefsInText(q.leaderNote, lang))}\n` : ""}`).join("\n");
+
+// Nov 11, 2026, v52, Phase 2 member mode: the member
+// template. A member pack carries the mandatory label
+// "Personal study, not pastor-approved" on the cover and in
+// the footer of every page. It has no approval code, no
+// church logo, no church name, and no "Approved by" line.
+// The label is part of the template, not something the
+// member can switch off: the PDF builder renders it from
+// the pack mode, and the member save route refuses any pack
+// that tries to carry church branding or a lock hash.
+const isMember = (pack.mode ?? "pastor") === "member";
+const MEMBER_LABEL = isEs ? "Estudio personal, no aprobado por el pastor" : "Personal study, not pastor-approved";
+const MEMBER_NOTE = isEs
+  ? `Estudio personal, no aprobado por el pastor. Las Escrituras en este paquete son de ${translationName}, llenadas por código, no escritas por el modelo. Las versiones para niños son relatos, no citas de las Escrituras.${pack.translation === "spabes" ? ` ${SPABES_CREDIT}` : ""}`
+  : "Personal study, not pastor-approved. Scripture in this pack is the Berean Standard Bible, filled in by code, not written by the model. Kid versions are retellings, not Scripture quotes.";
 
 // Oct 31, 2026, hash placement: families do not need the hash,
 // so it is small (7pt) and pushed to the very bottom of the
 // last page, above the footer, with #v(1fr) where it is used.
 // It is kept because it proves what the pastor approved.
-const hashBox = `#align(center)[#rect(inset: 6pt, stroke: 0.5pt)[
-  #text(7pt)[Approval code: #text(7pt, font: "DejaVu Sans Mono")[${pack.lockHash}]]
+// Nov 11, 2026, v52: a member pack has no hash at all, so it
+// gets a note box with the same verification words and the
+// mandatory label instead, in the same spot.
+const hashBox = isMember ? `#align(center)[#rect(inset: 6pt, stroke: 0.5pt)[
+  #text(7pt)[${MEMBER_NOTE}]
+]]` : `#align(center)[#rect(inset: 6pt, stroke: 0.5pt)[
+  #text(7pt)[${isEs ? "Código de aprobación" : "Approval code"}: #text(7pt, font: "DejaVu Sans Mono")[${pack.lockHash}]]
 
-  #text(7pt)[Scripture in this pack is the Berean Standard Bible,
-  verified character for character against the verse store before locking.
-  Kid versions are retellings, not Scripture quotes.]
+  #text(7pt)[${isEs ? `Las Escrituras en este paquete son de ${translationName}, verificadas carácter por carácter contra el texto bíblico antes de bloquear. Las versiones para niños son relatos, no citas de las Escrituras.${pack.translation === "spabes" ? ` ${SPABES_CREDIT}` : ""}` : "Scripture in this pack is the Berean Standard Bible,\n  verified character for character against the verse store before locking.\n  Kid versions are retellings, not Scripture quotes."}]
 ]]`;
 
 const classicFrom = pack.classicDevotional
@@ -133,13 +171,15 @@ const classicQuote = !pack.classicDevotional ? ""
     ? `${para(classicExcerpt)}\u201D`
     : quote(classicExcerpt);
 const classicLeader = [
-  pack.classicDevotional ? `= Classic devotional: ${esc(pack.classicDevotional.title)}
+  pack.classicDevotional ? `= ${isEs ? "Devocional clásico" : "Classic devotional"}: ${esc(pack.classicDevotional.title)}
 
-_From ${esc(classicFrom)}, anchored to ${esc(formatRef(pack.classicDevotional.anchor_ref))} (public domain). This is a classic text, not generated text._
+_${isEs ? "De" : "From"} ${esc(classicFrom)}, ${isEs ? "anclado a" : "anchored to"} ${esc(formatRef(pack.classicDevotional.anchor_ref, lang))} (${isEs ? "dominio público" : "public domain"}). ${isEs ? "Este es un texto clásico, no un texto generado." : "This is a classic text, not generated text."}_
 
 ${classicQuote}
 ` : "",
-  (pack.leaderQuestions ?? []).length ? `= Small-group leader page
+  (pack.leaderQuestions ?? []).length ? `= ${isEs ? "Página para el líder del grupo pequeño" : "Small-group leader page"}
+
+_${isEs ? "Escrituras en este paquete" : "Scripture in this pack"}:_ ${pack.adultDevotionals.map((a) => `${esc(dayName(a.day))}: ${esc(formatRef(a.scripture.reference, lang))}`).join("; ")}. ${isEs ? "Versículo para memorizar" : "Memory verse"}: ${esc(formatRef(pack.memoryVerse.reference, lang))}. ${isEs ? `Cada cita es de ${translationName}, llenada por código, no escrita por el modelo.` : "Every quote is from the Berean Standard Bible, filled in by code, not written by the model."}
 
 ${questions}
 ` : "",
@@ -163,21 +203,21 @@ const sourceVoices = [
 // prints once.
 const sourceLabels = [...new Set(sourceVoices.map(voiceLabel))];
 const sourcesBlock = classicLeader && sourceLabels.length
-  ? `\n\n#text(9pt)[_Sources for this pack:_ ${esc(sourceLabels.join("; "))}. Every source is public domain. Labels name the author's tradition so the pastor can judge each voice.]`
+  ? `\n\n#text(9pt)[_${isEs ? "Fuentes de este paquete" : "Sources for this pack"}:_ ${esc(sourceLabels.join("; "))}. ${isEs ? "Cada fuente es de dominio público. Las etiquetas nombran la tradición del autor para que el pastor pueda juzgar cada voz." : "Every source is public domain. Labels name the author's tradition so the pastor can judge each voice."}]`
   : "";
 const classicLeaderWithSources = classicLeader + sourcesBlock;
 
-const song = pack.hymn ? `= Hymn: ${esc(pack.hymn.title)}
+const song = pack.hymn ? `= ${isEs ? "Himno" : "Hymn"}: ${esc(pack.hymn.title)}
 
-_Tune: ${esc(pack.hymn.tune)}, ${esc(pack.hymn.tuneComposer)}. Words: ${esc(pack.hymn.author)} (${esc(pack.hymn.authorYears)}), ${pack.hymn.wordsYear}. Meter: ${esc(pack.hymn.meter)}._
+_${isEs ? "Melodía" : "Tune"}: ${esc(pack.hymn.tune)}, ${esc(pack.hymn.tuneComposer)}. ${isEs ? "Letra" : "Words"}: ${esc(pack.hymn.author)} (${esc(pack.hymn.authorYears)}), ${pack.hymn.wordsYear}. ${isEs ? "Metro" : "Meter"}: ${esc(pack.hymn.meter)}._
 
-_Public domain._
+_${isEs ? "Dominio público." : "Public domain."}_
 
 ${quote(pack.hymn.lyrics)}
 
 #v(1fr)
-#text(9pt)[${esc(pack.hymn.sourceNote)} Source: ${esc(pack.hymn.sourceUrl)} Sheet music and audio are on the share page.]
-` : pack.chorus ? `= Original chorus (legacy pack only): ${esc(pack.chorus.title)}
+#text(9pt)[${esc(pack.hymn.sourceNote)} ${isEs ? "Fuente" : "Source"}: ${esc(pack.hymn.sourceUrl)} ${isEs ? "La partitura y el audio están en la página para compartir." : "Sheet music and audio are on the share page."}]
+` : pack.chorus ? `= ${isEs ? "Coro original (solo paquetes antiguos)" : "Original chorus (legacy pack only)"}: ${esc(pack.chorus.title)}
 
 _Original, written for this pack. Not a known worship lyric._
 
@@ -187,7 +227,7 @@ ${para(pack.chorus.chordPro)}
 #text(9pt)[Original chorus, written for this pack. There is no sheet music or audio link for an original chorus; hymn pages link to sheet music and audio on the share page.]
 ` : "";
 
-const coloring = pack.coloring ? `= Coloring: ${esc(pack.coloring.title.replace(/ Coloring$/, ""))}
+const coloring = pack.coloring ? `= ${isEs ? "Colorear" : "Coloring"}: ${esc(pack.coloring.title.replace(/ Coloring$/, "").replace(/^Colorear: /, ""))}
 
 ${para(pack.coloring.description)}
 
@@ -198,6 +238,20 @@ ${para(pack.coloring.description)}
 ${hashBox}
 ` : "";
 
+// Nov 11, 2026, v51, Phase 1: Shared Dinner Conversation.
+// One family discussion question, pulled from the leader
+// guide, given a name and a prominent spot of its own,
+// between the days and the leader page. It is the first
+// leader question, verbatim, never a new question written
+// for this section. No leader questions means no section,
+// exactly like the leader page itself.
+const dinner = (pack.leaderQuestions ?? []).length ? `= ${isEs ? "Conversación familiar en la cena" : "Shared Dinner Conversation"}
+
+_${isEs ? "Hablen de esto juntos en la cena esta semana" : "Talk about this together at dinner this week"}:_
+
+${para(formatRefsInText(pack.leaderQuestions[0].question, lang))}
+` : "";
+
 // Nov 1, 2026, section toggles: the PDF renders only the
 // sections in the locked pack, in order, up to 9 pages for a
 // full pack, fewer for a subset. The hash box lives under
@@ -206,7 +260,15 @@ ${hashBox}
 // still carries its hash and verification note.
 const sections = [];
 if (days) sections.push(days);
-if (classicLeaderWithSources) sections.push(classicLeaderWithSources);
+// Nov 11, 2026, v51: the dinner question rides on the
+// leader page, not on a page of its own, because a section
+// of its own printed as one question on a nearly blank
+// page. It stays first, ahead of the leader heading, so
+// it is still the prominent spot. Only if a pack somehow
+// has leader questions but no leader page does it print
+// alone, so the question is never lost.
+if (classicLeaderWithSources) sections.push(dinner + classicLeaderWithSources);
+else if (dinner) sections.push(dinner);
 if (song) sections.push(song);
 if (coloring) sections.push(coloring);
 let body = sections.join("\n#pagebreak()\n");
@@ -238,8 +300,11 @@ else console.log("WARNING: logo file missing, cover will show tagline only");
 // The path is validated to stay under public/church-logos,
 // and a missing or unreadable file skips silently, never a
 // broken image, exactly like the Flockpath logo above.
+// Nov 11, 2026, v52: a member pack never prints a church
+// logo, even if one somehow rides in the pack file, because
+// a member pack has no church.
 let churchLogoFile = null;
-if (pack.churchLogo && /^church-logos\/[A-Za-z0-9._-]+\.(png|jpg|jpeg)$/i.test(pack.churchLogo)) {
+if (!isMember && pack.churchLogo && /^church-logos\/[A-Za-z0-9._-]+\.(png|jpg|jpeg)$/i.test(pack.churchLogo)) {
   const churchSrc = path.join(root, "public", pack.churchLogo);
   const churchExt = pack.churchLogo.split(".").pop().toLowerCase();
   if (existsSync(churchSrc)) {
@@ -256,8 +321,15 @@ if (pack.churchLogo && /^church-logos\/[A-Za-z0-9._-]+\.(png|jpg|jpeg)$/i.test(p
 // left falls back to the title alone. Grid with 1fr + auto
 // keeps left and right at the margins even when the left
 // side wraps for a long church name.
+// Nov 11, 2026, v52: a member pack's footer carries the
+// mandatory label on EVERY page, including page 1 (the
+// cover), because the label is the member pack's identity.
+// Left: "Personal study, not pastor-approved | Title".
 const pastorChurch = [pack.pastorName, pack.church].filter(Boolean).map(esc).join(", ");
-const footerLeft = pastorChurch ? `${pastorChurch} | ${esc(pack.title)}` : esc(pack.title);
+const footerLeft = isMember ? `${MEMBER_LABEL} | ${esc(pack.title)}` : (pastorChurch ? `${pastorChurch} | ${esc(pack.title)}` : esc(pack.title));
+const footerExpr = isMember
+  ? `context { grid(columns: (1fr, auto), align(left)[#text(9pt)[${footerLeft}]], align(right)[#text(9pt)[#link("https://www.flockpath.si")[www.flockpath.si] | ${isEs ? "Página" : "Page"} #counter(page).display()]]) }`
+  : `context if counter(page).get().first() == 1 { [] } else { grid(columns: (1fr, auto), align(left)[#text(9pt)[${footerLeft}]], align(right)[#text(9pt)[#link("https://www.flockpath.si")[www.flockpath.si] | ${isEs ? "Página" : "Page"} #counter(page).display()]]) }`;
 // Nov 5, 2026, round-3 cover note (v24): one short block on
 // the cover, one source only. The pastor's own note wins
 // when it has a verified verse and words; else the sermon
@@ -268,22 +340,24 @@ const footerLeft = pastorChurch ? `${pastorChurch} | ${esc(pack.title)}` : esc(p
 const coverNote = (() => {
   if (pack.pastorNote?.verse?.text && (pack.pastorNote.note ?? "").trim()) {
     return {
-      label: "Pastor's note",
+      // Nov 11, 2026, v52: a member's own note is "My note",
+      // never "Pastor's note", because no pastor wrote it.
+      label: isMember ? (isEs ? "Mi nota" : "My note") : (isEs ? "Nota del pastor" : "Pastor's note"),
       lines: [
-        `*${esc(formatRef(pack.pastorNote.verse.reference))}*`,
+        `*${esc(formatRef(pack.pastorNote.verse.reference, lang))}*`,
         quote(shortenVerse(pack.pastorNote.verse.text)),
-        para(formatRefsInText(pack.pastorNote.note)),
+        para(formatRefsInText(pack.pastorNote.note, lang)),
       ].join("\n\n  "),
     };
   }
   if ((pack.sermonSnapshot?.summary ?? "").trim()) {
-    const parts = [para(formatRefsInText(pack.sermonSnapshot.summary))];
-    if (pack.sermonSnapshot.quote) parts.push(quote(formatRefsInText(pack.sermonSnapshot.quote)));
-    return { label: "From the sermon", lines: parts.join("\n\n  ") };
+    const parts = [para(formatRefsInText(pack.sermonSnapshot.summary, lang))];
+    if (pack.sermonSnapshot.quote) parts.push(quote(formatRefsInText(pack.sermonSnapshot.quote, lang)));
+    return { label: isEs ? "Del sermón" : "From the sermon", lines: parts.join("\n\n  ") };
   }
   return null;
 })();
-const typ = `#set page(paper: "us-letter", margin: 0.75in, footer: context if counter(page).get().first() == 1 { [] } else { grid(columns: (1fr, auto), align(left)[#text(9pt)[${footerLeft}]], align(right)[#text(9pt)[#link("https://www.flockpath.si")[www.flockpath.si] | Page #counter(page).display()]]) })
+const typ = `#set page(paper: "us-letter", margin: 0.75in, footer: ${footerExpr})
 #set text(size: 12pt)
 #set heading(numbering: none)
 
@@ -292,20 +366,22 @@ ${churchLogoFile ? `  #image("${churchLogoFile}", width: 24%)\n\n  #v(0.5em)\n` 
 
   #text(14pt)[${esc(pack.passage)}]
 
-  #text(12pt)[A week of family discipleship]
+  #text(12pt)[${isEs ? "Una semana de discipulado familiar" : "A week of family discipleship"}]
 ]
 
 #v(0.6em)
 #align(center)[#rect(inset: 14pt, stroke: 1pt)[
-  *Memory verse: ${esc(formatRef(pack.memoryVerse.reference))}*
+  *${isEs ? "Versículo para memorizar" : "Memory verse"}: ${esc(formatRef(pack.memoryVerse.reference, lang))}*
 
   ${quote(shortenVerse(pack.memoryVerse.text))}
 ]]
 
 #v(0.6em)
-#align(center)[
-  Approved by ${esc(pack.pastorName)}, ${esc(pack.church)}
-]
+${isMember ? `#align(center)[#rect(inset: 10pt, stroke: 1pt)[
+  *${MEMBER_LABEL}*
+]]` : `#align(center)[
+  ${isEs ? "Aprobado por" : "Approved by"} ${esc(pack.pastorName)}, ${esc(pack.church)}
+]`}
 ${coverNote ? `
 #v(0.6em)
 #align(center)[#rect(inset: 12pt, stroke: 0.5pt)[
@@ -316,7 +392,7 @@ ${coverNote ? `
 
 #v(1fr)
 #align(center)[
-${logoExists ? `  #image("logo.png", width: 22%)\n\n  #v(0.5em)\n` : ""}  #text(10pt)[Made with love and by the grace of God - #link("https://www.flockpath.si")[www.flockpath.si]]
+${logoExists ? `  #image("logo.png", width: 22%)\n\n  #v(0.5em)\n` : ""}  #text(10pt)[${isEs ? "Hecho con amor y por la gracia de Dios" : "Made with love and by the grace of God"} - #link("https://www.flockpath.si")[www.flockpath.si]]
 ]
 
 #pagebreak()

@@ -14,7 +14,10 @@ if (!draftPath || !storePath || !outPath) {
 }
 const draft = JSON.parse(readFileSync(draftPath, "utf-8"));
 const store = JSON.parse(readFileSync(storePath, "utf-8"));
-const expanded = expandDraft(draft, store, "bsb");
+// Nov 11, 2026, v53: the translation comes from the draft,
+// not a hardcoded "bsb". A legacy draft carries no
+// translation and fills from BSB, as before.
+const expanded = expandDraft(draft, store, draft.translation ?? "bsb");
 expanded.status = "draft";
 writeFileSync(outPath, JSON.stringify(expanded, null, 1));
 console.log(`Expanded draft written to ${outPath}, id ${expanded.id}`);

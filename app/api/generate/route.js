@@ -35,20 +35,33 @@ export async function POST(request) {
   // only in this local job file and the local pack, never
   // sent anywhere.
   const sermonText = typeof body.sermonText === "string" ? body.sermonText.slice(0, 100000).trim() : "";
+  // Nov 11, 2026, v53, Phase 3 Spanish v1: the language and
+  // translation ride in the plan, so the worker ingests the
+  // right store and generates in the right language. Valid
+  // pairs only: en/bsb, es/rv1909, es/spabes. RVR1960 is
+  // copyrighted and is never accepted. Absent means en/bsb,
+  // so older input pages keep working.
+  const language = String(body.language ?? "en").trim().toLowerCase();
+  const translation = String(body.translation ?? "bsb").trim().toLowerCase();
+  const _pairOk = (language === "en" && translation === "bsb") || (language === "es" && (translation === "rv1909" || translation === "spabes"));
+  if (!_pairOk) return Response.json({ ok: false, error: "Language and translation must agree: English with BSB, Spanish with Reina-Valera 1909 or Español Sencillo 2026." }, { status: 400 });
   if (!passage) return Response.json({ ok: false, error: "A passage is required." }, { status: 400 });
   // v28, Nov 5, 2026: a range (Matthew 28:18-20) is one
   // passage unit, so a ref may be a single verse or a
-  // same-chapter range. The 5 units are still distinct.
-  if (refs.length !== 5 || refs.some((r) => !/^[A-Z0-9]+ \d+:\d+(-\d+)?$/.test(r))) {
-    return Response.json({ ok: false, error: "A generation job needs exactly 5 verse refs, confirmed on the input page." }, { status: 400 });
+  // same-chapter range. The units are still distinct.
+  // Nov 11, 2026, v54, Phase 4 flexible length: a pack is
+  // 3, 5, or 7 days, so the plan carries that many refs.
+  // Anything else is rejected here, before a job is queued.
+  if (![3, 5, 7].includes(refs.length) || refs.some((r) => !/^[A-Z0-9]+ \d+:\d+(-\d+)?$/.test(r))) {
+    return Response.json({ ok: false, error: "A generation job needs 3, 5, or 7 verse refs, confirmed on the input page." }, { status: 400 });
   }
   // Nov 3, 2026, agent-test fix B3: duplicate refs and unknown
   // book codes used to queue jobs that could never produce a
   // good pack (duplicates collapse to one day; an unknown book
   // fails verse lookup in the worker), so the pastor waited
   // for a preventable failure. Reject both at record time.
-  if (new Set(refs).size !== 5) {
-    return Response.json({ ok: false, error: "Each of the 5 verse refs must be different. Duplicates collapse to one day." }, { status: 400 });
+  if (new Set(refs).size !== refs.length) {
+    return Response.json({ ok: false, error: `Each of the ${refs.length} verse refs must be different. Duplicates collapse to one day.` }, { status: 400 });
   }
   if (refs.some((r) => !BOOK_NAMES[r.split(" ")[0]])) {
     return Response.json({ ok: false, error: "One of the verse refs uses an unknown book code. Use a book from the 66-book Bible." }, { status: 400 });
@@ -57,14 +70,33 @@ export async function POST(request) {
   const id = randomBytes(8).toString("hex");
   // Nov 2, 2026, denomination preset: the plan carries the
   // pastor's stored denomination so the bundle orders that
-  // tradition's voices first. It lives only in this local job
-  // file and the local auth database, never in a pack.
+  // tradition's voices first. Nov 16, 2026, v57 hard filter:
+  // the bundle also drops opt-in voices from every other
+  // tradition, so they can never appear in this pastor's pack.
+  // It lives only in this local job file and the local auth
+  // database, never in a pack.
   // Nov 3, 2026, church logo: unlike the denomination, the
   // logo DOES go into the pack, because it is the church's
   // own branding, chosen by the pastor, printed on the cover.
   const pastor = getPastor(s.email);
+  // Nov 11, 2026, v52, Phase 2 member mode: the plan carries
+  // the account's role, so the draft is a member pack from
+  // the start. Declared here, before the lines that use it:
+  // the doctrinal statement and the church logo both depend
+  // on the role, and a use before this line is a ReferenceError
+  // at request time (v54 live-test catch, Nov 11, 2026).
+  const role = pastor?.role ?? "pastor";
   const denomination = pastor?.denomination ?? "non-denominational";
-  const churchLogo = pastor?.logo ?? null;
+  // Nov 11, 2026, v54, Phase 4 doctrinal profile: the plan
+  // carries the pastor's stored statement so the worker can
+  // steer the writing model and run the review check. It
+  // lives only in this local job file and the local auth
+  // database, never in a pack. Members have no statement;
+  // their packs use the default guidance.
+  const doctrinalStatement = role === "member" ? "" : (pastor?.doctrinalStatement ?? "");
+  // A member has no church logo; the logo is a pastor-only
+  // item, so it is never attached to a member job.
+  const churchLogo = role === "member" ? null : (pastor?.logo ?? null);
   // Nov 5, 2026, v33 (Google API first): the plan records which
   // writing model the pastor picked (local 4B or Google Gemini),
   // so the pack record shows how it was written. The worker reads
@@ -76,9 +108,9 @@ export async function POST(request) {
   const modelBackend = pastor?.modelBackend ?? "local";
   const job = {
     id, status: "queued", createdAt: new Date().toISOString(),
-    email: s.email, pastorName: s.name, church: s.church,
-    plan: { passage, refs, topics, denomination, churchLogo, modelBackend, ...(sermonText ? { sermonText } : {}) },
-    note: "Job recorded only. The worker generates a draft, which takes about 6 to 9 minutes with OpenRouter, Grok, or Google, or up to 30 minutes with the local model depending on your computer, and stops. Nothing is locked or published until the pastor reviews and approves it.",
+    email: s.email, pastorName: s.name, church: s.church, mode: role,
+    plan: { passage, refs, topics, dayCount: refs.length, denomination, ...(doctrinalStatement ? { doctrinalStatement } : {}), churchLogo, modelBackend, mode: role, language, translation, ...(role === "member" ? { memberName: s.name } : {}), ...(sermonText ? { sermonText } : {}) },
+    note: "Job recorded only. The worker generates a draft, which takes ~10 minutes with OpenRouter, Grok, or Google, or up to 30 minutes with the local model depending on your computer, and stops. Nothing is locked or published until the pastor reviews and approves it.",
   };
   writeFileSync(jobPath(id), JSON.stringify(job, null, 1));
   writeFileSync(path.join(JOBS, `${id}-plan.json`), JSON.stringify(job.plan, null, 1));

@@ -5,7 +5,7 @@
 // the local reset script, on their own computer.
 export default function Forgot() {
   return (
-    <main style={{ maxWidth: 640, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
+    <main className="fp-main fp-main-narrow">
       <h1>Forgot your password?</h1>
       <p>Flockpath runs on your own computer and has no email service, so no reset link can be emailed to you. There are two ways back in:</p>
       <h2>1. If you can still sign in</h2>

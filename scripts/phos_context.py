@@ -35,18 +35,22 @@ Usage:
   python3 scripts/phos_context.py "PSA 23:1,PSA 23:2,PSA 23:3,PSA 23:4,PSA 23:6" data/phos-psa23.json
   python3 scripts/phos_context.py "PSA 23:1,PSA 23:2,PSA 23:3,PSA 23:4,PSA 23:6" data/phos-psa23.json --tradition baptist
 
-Nov 2, 2026, denomination preset: --tradition orders the bundle,
-it never filters it. The pastor's tradition voices sort first
-among the candidates the queries already returned; every other
-voice stays in the bundle and every entry carries its tradition
-label. The default (no flag, non-denominational, other,
-congregational) keeps today's order exactly: commentary by
-verse-specific then source_id, devotionals by source_id.
-Dictionaries, encyclopedias, and liturgy are not in the bundle
-yet (PHOS-USE-IN-PACKS.md), so presets whose voices live only
-there order nothing here, and their signup messages say so.
-This changes which excerpts the model sees, never the prompts,
-temps, gates, or verse text, so v23 generation logic is untouched.
+Nov 2, 2026, denomination preset: --tradition orders the bundle.
+Nov 16, 2026, v57 hard filter: --tradition ALSO filters the
+bundle. A bundle entry whose Phos sensitivity is "opt-in" appears
+only when its tradition key equals the pastor's --tradition key;
+for every other pastor it is dropped before ordering, so it can
+never be the classic devotional, enter the devotional rotation,
+or reach a model prompt. General entries are never filtered. No
+--tradition (or a key with no opt-in voices) means no opt-in
+entry passes, which is the safe default. The default
+(non-denominational, other, congregational) keeps today's order
+exactly for general voices. Dictionaries, encyclopedias, and
+liturgy are not in the bundle yet (PHOS-USE-IN-PACKS.md), so
+presets whose voices live only there order nothing here, and
+their signup messages say so. This changes which excerpts the
+model sees, never the prompts, temps, gates, or verse text, so
+v23 generation logic is untouched.
 """
 import json
 import os
@@ -200,8 +204,16 @@ def resolve_verse_text(ref, store):
 # Fausset was an Irish Anglican evangelical; the Book of Common
 # Prayer is not in the bundle, so it cannot sort here. Catholic
 # sorts the two Catholic devotionals first, which is what puts
-# them in the classic-devotional rotation (the classic devotional
-# is the first anchored devotional in bundle order).
+# them in the classic-devotional rotation once they anchor to a
+# verse (the classic devotional is the first anchored devotional
+# in bundle order). Nov 16, 2026, v57: the two Catholic
+# devotionals carry no verse anchor in the current bundle DB
+# (their anchor_ref is empty; they are chapter/letter works,
+# not verse-anchored daily devotionals), so today they cannot
+# enter the rotation for ANY pastor, Catholic included. That is
+# a data gap, not this filter: the filter below is what
+# guarantees they never appear for a pastor who has not opted
+# into the Catholic tradition, anchors or no anchors.
 PREFERRED_VOICES = {
     "baptist": {"gill", "spurgeon", "treasury_of_david"},
     "presbyterian": {"barnes_nt", "matthew_henry", "calvin"},
@@ -220,6 +232,25 @@ def preferred_first(entries, preferred, key):
     first = [e for e in entries if e[key] in preferred]
     rest = [e for e in entries if e[key] not in preferred]
     return first + rest
+
+
+# Nov 16, 2026, v57 hard filter (Jeremiah, Nov 16: "Add a hard
+# filter"): a bundle entry whose Phos sensitivity is "opt-in"
+# appears ONLY for a pastor who opted into that tradition, i.e.
+# whose --tradition key equals the entry's tradition key. Every
+# other pastor never sees it: not as the classic devotional, not
+# in the devotional rotation, not in commentary, not in a model
+# prompt. General entries (sensitivity "general", or an older DB
+# with no sensitivity at all) always pass. No --tradition means
+# no opt-in entry passes. Returns (kept, dropped_count).
+def filter_opt_in(entries, tradition):
+    kept, dropped = [], 0
+    for e in entries:
+        if e.get("sensitivity") == "opt-in" and e.get("tradition") != tradition:
+            dropped += 1
+            continue
+        kept.append(e)
+    return kept, dropped
 
 
 def clean_excerpt(text, max_chars):
@@ -276,6 +307,9 @@ def main():
         for r in con.execute("SELECT source_id, title, tradition, tradition_label, sensitivity FROM sources"):
             labels[r[0]] = {"title": r[1], "tradition": r[2], "tradition_label": r[3], "sensitivity": r[4]}
     bundle = {"verses": [], "sources_note": "All study material is Public Domain, per Phos sources table. Commentary excerpts are excerpts, not whole entries. Cross-references are links, not quotes."}
+    # Nov 16, 2026, v57 hard filter: count of opt-in voices
+    # dropped for this pastor's tradition, printed below.
+    opt_in_dropped = 0
     for ref in refs:
         code, ch, v = parse_ref(ref)
         comm_book, comm_order, xref_order, inter_book, anchor_book, store_file = BOOKS[code]
@@ -311,6 +345,11 @@ def main():
                 "range": f"{ch}:{row['start_verse']}-{row['end_verse']}" if row["start_verse"] else f"chapter {ch}",
                 "excerpt": clean_excerpt(row["text"], 400),
             })
+        # Nov 16, 2026, v57 hard filter: opt-in entries are
+        # dropped BEFORE ordering, so a filtered voice never
+        # takes one of the two commentary slots.
+        comm_unique, comm_dropped = filter_opt_in(comm_unique, tradition)
+        opt_in_dropped += comm_dropped
         comm_out = preferred_first(comm_unique, preferred, "source")[:2]
         # Lexicon: interlinear content words, max 4
         words = con.execute(
@@ -378,6 +417,11 @@ def main():
     # The classic devotional is the first anchored devotional in
     # bundle order, so this is what puts a Catholic pastor's
     # Catholic devotionals in the classic rotation.
+    # Nov 16, 2026, v57 hard filter: opt-in devotionals are
+    # dropped BEFORE ordering, so a filtered voice can never be
+    # the classic devotional or enter the rotation.
+    dev_all, dev_dropped = filter_opt_in(dev_all, tradition)
+    opt_in_dropped += dev_dropped
     bundle["devotionals"] = preferred_first(dev_all, preferred, "source")[:5]
     out_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=1), encoding="utf-8")
     for verse in bundle["verses"]:
@@ -390,6 +434,10 @@ def main():
     print(f"Devotionals anchored: {len(bundle['devotionals'])}")
     for d in bundle["devotionals"]:
         print(f"  {d['source']}: {d['title']} ({d['anchor_ref']})")
+    # Nov 16, 2026, v57 hard filter: opt-in voices excluded for
+    # this tradition (0 is normal for a Catholic pastor and for
+    # passages no opt-in voice anchors to).
+    print(f"Opt-in voices excluded for tradition {tradition or 'none'}: {opt_in_dropped}")
     print(f"Wrote {out_path}")
     return 0
 

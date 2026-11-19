@@ -62,6 +62,20 @@ elif command -v python3 >/dev/null 2>&1; then
 else
   fail "Python 3 is not installed. Install Python 3.11 or newer, then run this script again."
 fi
+# Nov 11, 2026, v54, Phase 4 YouTube import: the web app runs
+# its import script with this same Python (the one that has
+# the app's packages). The import route spawns the literal
+# "python3", so this script puts the venv first on PATH: the
+# venv Python then wins at runtime, and a manual `next start`
+# falls back to the system python3. (The route must NOT read
+# the path from an env var or a variable: the Next.js build's
+# file tracer follows a non-literal spawn binary and runs away
+# using gigabytes; the literal builds in seconds. A literal
+# .venv path in the route file is likewise forbidden: the build
+# tries to resolve the venv's python symlink and fails.)
+if [ -d .venv/bin ]; then
+  export PATH="$APP_ROOT/.venv/bin:$PATH"
+fi
 "$PY" -c "import llama_cpp" 2>/dev/null || fail "Python package llama-cpp-python is not installed. Run: $PY -m pip install llama-cpp-python, then run this script again."
 
 hash_file() {

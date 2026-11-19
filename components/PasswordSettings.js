@@ -33,7 +33,7 @@ export default function PasswordSettings() {
 
   const input = { display: "block", width: "100%", padding: 8, marginBottom: 12, fontSize: 15 };
   return (
-    <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 24 }}>
+    <section className="fp-card">
       <h2 style={{ marginTop: 0 }}>Password</h2>
       <p>Demo-version rule: at least 8 characters. A future version will ask for more. If you cannot sign in at all, use the reset script on the <a href="/forgot">forgot-password page</a> instead.</p>
       <form onSubmit={submit}>
