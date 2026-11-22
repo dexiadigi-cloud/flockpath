@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { COLORING_TEMPLATES, matchColoring } from "../lib/coloring.mjs";
-import { formatRef, formatRefsInText } from "../lib/refs.mjs";
+import { formatRef, formatRefsInText, parseRef } from "../lib/refs.mjs";
+import { formatMeter } from "../lib/translation.mjs";
 
 // Nov 2, 2026, pastor-test fix: this builder used to hardcode
 // data/locked-pack.json and ignore its arguments, so it
@@ -53,6 +54,25 @@ const translationName = TRANSLATION_NAME[pack.translation ?? "bsb"] ?? "Berean S
 // (that license covers the 2018/2019 editions, not 2026).
 const SPABES_CREDIT = "Traducción por AudioBiblia.org, editado por Irma Flores.";
 
+// Nov 20, 2026, v61 fix (item 18): the internal build label
+// leaks into the pack when the pastor's title or passage
+// carries it ("Power of the Cross v60 Family Pack"), and the
+// builder used to print the title verbatim on the cover, in
+// the subtitle, in every footer, and in the coloring title
+// and description. Strip a version marker at render time:
+// " v60" (any v<number>) and " mac-test-YYYYMMDD". The
+// stored title, passage, and coloring text are untouched,
+// so the pack file and the download name keep what the
+// pastor typed; only the printed pack drops the label.
+const stripVersion = (s) => String(s ?? "")
+  .replace(/\s+v\d+\b/gi, "")
+  .replace(/^v\d+\s+/gi, "")
+  .replace(/\s+mac-test-\d{8}\b/gi, "")
+  .replace(/\s{2,}/g, " ")
+  .trim();
+const displayTitle = stripVersion(pack.title);
+const displayPassage = stripVersion(pack.passage);
+
 // Escape Typst markup characters in generated prose so a stray
 // # or * in a devotional cannot break the compile or change layout.
 function esc(s) {
@@ -78,21 +98,31 @@ function quote(s) {
 
 // Nov 5, 2026, v28, Jeremiah's verse overflow: a long
 // verse (or range) is shortened in the PDF print only,
-// and only when it overflows. The check is a length
-// threshold (300 characters); a verse at or under it
-// prints in full. Over it, the print shows an exact
-// excerpt of the BSB store text, cut at a word boundary
-// (never mid-word), with an ellipsis so the reader knows
-// it continues. The pack's stored text and the review
-// page keep the full verse; only the print shortens it.
-// The shortened text is never a paraphrase.
-const VERSE_PRINT_MAX = 300;
+// and only when it overflows. The pack's stored text and
+// the review page keep the full verse; only the print
+// shortens it. The shortened text is never a paraphrase.
+// Nov 20, 2026, v61 fix (item 16): the 300-character cap
+// cut the payoff words (Genesis 2:17 printed "you will
+// surely…" and dropped "die"; Leviticus 4:13-21, 1,289
+// characters, printed about 1.3 verses). Day pages run
+// only 60-70% full, so fit was never the constraint. The
+// cap is now 1,500 characters, which prints the longest
+// cited range seen (Leviticus 4:13-21) in full, and a
+// range still over the cap is cut at the last sentence
+// end inside the window, never mid-sentence, so no
+// sentence's final word is ever dropped. The ellipsis
+// stays, so the reader knows the passage continues.
+const VERSE_PRINT_MAX = 1500;
 function shortenVerse(text) {
   const t = String(text ?? "");
   if (t.length <= VERSE_PRINT_MAX) return t;
-  const cut = t.slice(0, VERSE_PRINT_MAX);
-  const lastSpace = cut.lastIndexOf(" ");
-  const head = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd().replace(/[,;:]+$/, "");
+  const window = t.slice(0, VERSE_PRINT_MAX);
+  let cutAt = -1;
+  for (const mark of [". ", "! ", "? "]) cutAt = Math.max(cutAt, window.lastIndexOf(mark));
+  if (/[.!?]$/.test(window)) cutAt = Math.max(cutAt, window.length - 1);
+  if (cutAt >= 0) return window.slice(0, cutAt + 1).trimEnd() + "\u2026";
+  const lastSpace = window.lastIndexOf(" ");
+  const head = (lastSpace > 0 ? window.slice(0, lastSpace) : window).trimEnd().replace(/[,;:]+$/, "");
   return head + "\u2026";
 }
 
@@ -192,6 +222,62 @@ ${questions}
 // an unchecked classic devotional never leaves its voice in
 // the list. Legacy packs without phosVoices print no list,
 // which keeps their layout exactly as before.
+// Nov 19, 2026, Viz.Bible Phase 1: the places note rides on
+// the leader page, after the leader questions, one line per
+// place (name, modern identification, confidence). It prints
+// only when the locked pack carries placesNote, so the review
+// toggle, which deletes that field, drops the note. The
+// sources list gains a places entry the same way, and the
+// "every source is public domain" sentence is corrected when
+// places are present, because place data is CC BY 4.0, not
+// public domain. No map image in this phase.
+const placesBlock = classicLeader && (pack.placesNote?.places?.length ?? 0)
+  ? `\n\n_${isEs ? "Lugares de fondo" : "Background - places"}:_\n${pack.placesNote.places.map((p) => `- ${esc(p.name)}${p.modern_name ? ` (${isEs ? "hoy" : "today"} ${esc(p.modern_name)})` : ` (${isEs ? "identificación moderna incierta" : "modern identification uncertain"})`} - ${isEs ? "confianza" : "confidence"} ${esc(p.confidence)}.`).join("\n")}`
+  : "";
+// Nov 19, 2026, Viz.Bible Phase 2: the names note rides on
+// the leader page, after the places note, one line per name
+// (Hitchcock meaning first, then one TIPNR family link as
+// cross-check, then the verse). It prints only when the locked
+// pack carries namesNote, so the review toggle, which deletes
+// that field, drops the note. The sources list gains a names
+// entry the same way, and the "every source is public domain"
+// sentence is corrected when names are present, because name
+// data is CC BY 4.0, not public domain. No AI description text
+// is printed: TIPNR's brief / short / article descriptions
+// were never ingested.
+const namesBlock = classicLeader && (pack.namesNote?.names?.length ?? 0)
+  ? `\n\n_${isEs ? "Nombres de fondo" : "Background - names"}:_\n${pack.namesNote.names.map((n) => `- ${esc(n.name)}${n.meaning ? ` (${isEs ? "significa" : "means"} "${esc(n.meaning)}")` : ""}${n.family_note ? ` - ${esc(n.family_note)}` : ""} (${isEs ? "nombrado en" : "named in"} ${esc(n.verse)}).`).join("\n")}`
+  : "";
+// Nov 19, 2026, Viz.Bible Phase 3: the topics note rides on
+// the leader page, after the names note, one line per verse
+// (reference, then its text in the pack's translation).
+// Nov 19, 2026, v60 fixes: the text is the pack's own
+// translation (rv1909 / spabes for a Spanish pack), filled
+// by phos_context.py with --translation, never BSB text in
+// a Spanish note. It prints only when the locked pack
+// carries topicsNote, so the review toggle, which deletes
+// that field, drops the note. The sources list gains a topics
+// entry the same way, and the "every source is public domain"
+// sentence is corrected when topics are present, because topical
+// data is CC BY 4.0, not public domain. No ESV text is printed:
+// the verses are rendered in the pack's translation from the bundle.
+// Nov 20, 2026, v61 fix (item 5): the stored topics refs are
+// English ("Philippians 4:6-7"), while the verse text is the
+// pack's own translation, so a Spanish pack printed English
+// labels over Spanish verses. The refs are mapped at render
+// time through the existing Spanish book names (lib/refs.mjs),
+// so the stored refs stay English and English packs print
+// exactly what they stored. "Psalms" has no parse entry (the
+// map uses "Psalm"), so it is folded to "Psalm" first; an
+// unparsable ref falls back to the stored string, never a guess.
+const topicRef = (r) => {
+  if (!isEs) return r;
+  const parsed = parseRef(r) ?? parseRef(String(r ?? "").replace(/^Psalms\b/, "Psalm"));
+  return parsed ? formatRef(parsed, "es") : r;
+};
+const topicsBlock = classicLeader && (pack.topicsNote?.verses?.length ?? 0)
+  ? `\n\n_${isEs ? "Temas de fondo" : "Background - topics"}${pack.topicsNote.topic ? ` (${esc(pack.topicsNote.topic)})` : ""}:_\n${pack.topicsNote.verses.map((v) => `- ${esc(topicRef(v.verse))}: ${esc(v.text)}`).join("\n")}`
+  : "";
 const voiceLabel = (v) => `${v.title}${v.tradition_label ? ` (${v.tradition_label})` : ""}`;
 const sourceVoices = [
   ...(pack.phosVoices?.commentary ?? []),
@@ -202,21 +288,76 @@ const sourceVoices = [
 // reads like padding. Labels dedupe here, so each voice
 // prints once.
 const sourceLabels = [...new Set(sourceVoices.map(voiceLabel))];
+if (pack.placesNote?.places?.length) sourceLabels.push("Places: OpenBible.info (CC BY 4.0)");
+if (pack.namesNote?.names?.length) sourceLabels.push("Names: STEP Bible (CC BY 4.0)");
+if (pack.topicsNote?.verses?.length) sourceLabels.push("Topics: OpenBible.info (CC BY 4.0)");
+const hasPlaces = pack.placesNote?.places?.length ? true : false;
+const hasNames = pack.namesNote?.names?.length ? true : false;
+const hasTopics = pack.topicsNote?.verses?.length ? true : false;
+// Nov 19, 2026, Viz.Bible Phase 2: the public-domain sentence is
+// corrected for each CC BY 4.0 source actually present (places,
+// names, or both); with neither it is unchanged.
+// Nov 19, 2026, Viz.Bible Phase 3: topics join the same rule, so
+// the sentence now covers all eight combinations. The four
+// pre-existing strings (neither, places only, names only, both)
+// are reproduced verbatim below.
+let ccByNote;
+if (hasPlaces && hasNames && hasTopics) {
+  ccByNote = isEs ? "Los datos de lugares son de OpenBible.info, CC BY 4.0; los datos de nombres son de STEP Bible, CC BY 4.0; los datos de temas son de OpenBible.info, CC BY 4.0; todas las demás fuentes son de dominio público." : "Place data is OpenBible.info, CC BY 4.0; name data is STEP Bible, CC BY 4.0; topic data is OpenBible.info, CC BY 4.0; every other source is public domain.";
+} else if (hasPlaces && hasNames) {
+  ccByNote = isEs ? "Los datos de lugares son de OpenBible.info, CC BY 4.0; los datos de nombres son de STEP Bible, CC BY 4.0; todas las demás fuentes son de dominio público." : "Place data is OpenBible.info, CC BY 4.0; name data is STEP Bible, CC BY 4.0; every other source is public domain.";
+} else if (hasPlaces && hasTopics) {
+  ccByNote = isEs ? "Los datos de lugares son de OpenBible.info, CC BY 4.0; los datos de temas son de OpenBible.info, CC BY 4.0; todas las demás fuentes son de dominio público." : "Place data is OpenBible.info, CC BY 4.0; topic data is OpenBible.info, CC BY 4.0; every other source is public domain.";
+} else if (hasNames && hasTopics) {
+  ccByNote = isEs ? "Los datos de nombres son de STEP Bible, CC BY 4.0; los datos de temas son de OpenBible.info, CC BY 4.0; todas las demás fuentes son de dominio público." : "Name data is STEP Bible, CC BY 4.0; topic data is OpenBible.info, CC BY 4.0; every other source is public domain.";
+} else if (hasPlaces) {
+  ccByNote = isEs ? "Los datos de lugares son de OpenBible.info, CC BY 4.0; todas las demás fuentes son de dominio público." : "Place data is OpenBible.info, CC BY 4.0; every other source is public domain.";
+} else if (hasNames) {
+  ccByNote = isEs ? "Los datos de nombres son de STEP Bible, CC BY 4.0; todas las demás fuentes son de dominio público." : "Name data is STEP Bible, CC BY 4.0; every other source is public domain.";
+} else if (hasTopics) {
+  ccByNote = isEs ? "Los datos de temas son de OpenBible.info, CC BY 4.0; todas las demás fuentes son de dominio público." : "Topic data is OpenBible.info, CC BY 4.0; every other source is public domain.";
+} else {
+  ccByNote = isEs ? "Cada fuente es de dominio público. Las etiquetas nombran la tradición del autor para que el pastor pueda juzgar cada voz." : "Every source is public domain. Labels name the author's tradition so the pastor can judge each voice.";
+}
 const sourcesBlock = classicLeader && sourceLabels.length
-  ? `\n\n#text(9pt)[_${isEs ? "Fuentes de este paquete" : "Sources for this pack"}:_ ${esc(sourceLabels.join("; "))}. ${isEs ? "Cada fuente es de dominio público. Las etiquetas nombran la tradición del autor para que el pastor pueda juzgar cada voz." : "Every source is public domain. Labels name the author's tradition so the pastor can judge each voice."}]`
+  ? `\n\n#text(9pt)[_${isEs ? "Fuentes de este paquete" : "Sources for this pack"}:_ ${esc(sourceLabels.join("; "))}. ${ccByNote}]`
   : "";
-const classicLeaderWithSources = classicLeader + sourcesBlock;
+const classicLeaderWithSources = classicLeader + placesBlock + namesBlock + topicsBlock + sourcesBlock;
 
+// Nov 19, 2026, v60 fixes: 1,957 of the 2,198 hymns carry
+// no tune data, so a hymn with no tune prints no tune line
+// at all, instead of a blank "Tune: , .". The composer
+// prints only with its tune.
+const tuneLine = pack.hymn?.tune
+  ? `${isEs ? "Melodía" : "Tune"}: ${esc(pack.hymn.tune)}${pack.hymn.tuneComposer ? `, ${esc(pack.hymn.tuneComposer)}` : ""}. `
+  : "";
+// Nov 20, 2026, v61 fix (item 17): the hymn's sourceNote is
+// internal QA/provenance text ("staged exactly", "first-line
+// text slug", "that record was NOT used", "PD rests on",
+// "108-111 hymnals") and never prints in a family pack. The
+// footer carries one clean credit line: the source host from
+// the stored URL, plus the share-page sentence. The stored
+// sourceNote stays in the pack file for the review record;
+// only the print drops it. A missing or unparsable URL
+// prints no source, never a broken line.
+// The stanza 3 artifact "For the remission of your sins:""
+// is the Hymnary source's closing quote stranded after a
+// colon at the end of a line; strip a quote that directly
+// follows a colon at end of line, hymn lyrics only.
+const hymnSourceHost = (() => {
+  try { return new URL(pack.hymn?.sourceUrl ?? "").hostname.replace(/^www\./, ""); } catch { return ""; }
+})();
+const hymnLyrics = String(pack.hymn?.lyrics ?? "").replace(/:(["\u201C\u201D])(?=\r?\n|$)/g, ":");
 const song = pack.hymn ? `= ${isEs ? "Himno" : "Hymn"}: ${esc(pack.hymn.title)}
 
-_${isEs ? "Melodía" : "Tune"}: ${esc(pack.hymn.tune)}, ${esc(pack.hymn.tuneComposer)}. ${isEs ? "Letra" : "Words"}: ${esc(pack.hymn.author)} (${esc(pack.hymn.authorYears)}), ${pack.hymn.wordsYear}. ${isEs ? "Metro" : "Meter"}: ${esc(pack.hymn.meter)}._
+_${tuneLine}${isEs ? "Letra" : "Words"}: ${esc(pack.hymn.author)} (${esc(pack.hymn.authorYears)}), ${pack.hymn.wordsYear}. ${isEs ? "Metro" : "Meter"}: ${esc(formatMeter(pack.hymn.meter, lang))}._
 
 _${isEs ? "Dominio público." : "Public domain."}_
 
-${quote(pack.hymn.lyrics)}
+${quote(hymnLyrics)}
 
 #v(1fr)
-#text(9pt)[${esc(pack.hymn.sourceNote)} ${isEs ? "Fuente" : "Source"}: ${esc(pack.hymn.sourceUrl)} ${isEs ? "La partitura y el audio están en la página para compartir." : "Sheet music and audio are on the share page."}]
+#text(9pt)[${hymnSourceHost ? `${isEs ? "Fuente" : "Source"}: ${esc(hymnSourceHost)}. ` : ""}${isEs ? "La partitura y el audio están en la página para compartir." : "Sheet music and audio are on the share page."}]
 ` : pack.chorus ? `= ${isEs ? "Coro original (solo paquetes antiguos)" : "Original chorus (legacy pack only)"}: ${esc(pack.chorus.title)}
 
 _Original, written for this pack. Not a known worship lyric._
@@ -227,9 +368,9 @@ ${para(pack.chorus.chordPro)}
 #text(9pt)[Original chorus, written for this pack. There is no sheet music or audio link for an original chorus; hymn pages link to sheet music and audio on the share page.]
 ` : "";
 
-const coloring = pack.coloring ? `= ${isEs ? "Colorear" : "Coloring"}: ${esc(pack.coloring.title.replace(/ Coloring$/, "").replace(/^Colorear: /, ""))}
+const coloring = pack.coloring ? `= ${isEs ? "Colorear" : "Coloring"}: ${esc(stripVersion(pack.coloring.title).replace(/ Coloring$/, "").replace(/^Colorear: /, ""))}
 
-${para(pack.coloring.description)}
+${para(stripVersion(pack.coloring.description))}
 
 #v(1em)
 #align(center)[#image("../public/coloring/${coloringFile}", width: 90%)]
@@ -254,7 +395,13 @@ ${para(formatRefsInText(pack.leaderQuestions[0].question, lang))}
 
 // Nov 1, 2026, section toggles: the PDF renders only the
 // sections in the locked pack, in order, up to 9 pages for a
-// full pack, fewer for a subset. The hash box lives under
+// full pack without leader notes, up to 10 pages with places,
+// names, or topics notes (Jeremiah accepted 10 pages with notes
+// Nov 19, 2026), and up to 11 pages when a long day passage
+// pushes a day page over (Jeremiah accepted 11 pages for long
+// passages Nov 20, 2026, after the v61 review pack ran 11 pages
+// on the full Leviticus 4:13-21 quote, ~1,289 chars under the
+// raised 1500-char verse cap). Fewer for a subset. The hash box lives under
 // the coloring page when coloring is included, otherwise at
 // the end of the last section, so a pack without coloring
 // still carries its hash and verification note.
@@ -326,7 +473,7 @@ if (!isMember && pack.churchLogo && /^church-logos\/[A-Za-z0-9._-]+\.(png|jpg|jp
 // cover), because the label is the member pack's identity.
 // Left: "Personal study, not pastor-approved | Title".
 const pastorChurch = [pack.pastorName, pack.church].filter(Boolean).map(esc).join(", ");
-const footerLeft = isMember ? `${MEMBER_LABEL} | ${esc(pack.title)}` : (pastorChurch ? `${pastorChurch} | ${esc(pack.title)}` : esc(pack.title));
+const footerLeft = isMember ? `${MEMBER_LABEL} | ${esc(displayTitle)}` : (pastorChurch ? `${pastorChurch} | ${esc(displayTitle)}` : esc(displayTitle));
 const footerExpr = isMember
   ? `context { grid(columns: (1fr, auto), align(left)[#text(9pt)[${footerLeft}]], align(right)[#text(9pt)[#link("https://www.flockpath.si")[www.flockpath.si] | ${isEs ? "Página" : "Page"} #counter(page).display()]]) }`
   : `context if counter(page).get().first() == 1 { [] } else { grid(columns: (1fr, auto), align(left)[#text(9pt)[${footerLeft}]], align(right)[#text(9pt)[#link("https://www.flockpath.si")[www.flockpath.si] | ${isEs ? "Página" : "Page"} #counter(page).display()]]) }`;
@@ -362,9 +509,9 @@ const typ = `#set page(paper: "us-letter", margin: 0.75in, footer: ${footerExpr}
 #set heading(numbering: none)
 
 #align(center)[
-${churchLogoFile ? `  #image("${churchLogoFile}", width: 24%)\n\n  #v(0.5em)\n` : ""}  #text(26pt, weight: "bold")[${esc(pack.title)}]
+${churchLogoFile ? `  #image("${churchLogoFile}", width: 24%)\n\n  #v(0.5em)\n` : ""}  #text(26pt, weight: "bold")[${esc(displayTitle)}]
 
-  #text(14pt)[${esc(pack.passage)}]
+  #text(14pt)[${esc(displayPassage)}]
 
   #text(12pt)[${isEs ? "Una semana de discipulado familiar" : "A week of family discipleship"}]
 ]

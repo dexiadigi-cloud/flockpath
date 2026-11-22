@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAppLanguage } from "./AppLanguage";
 
 // Nov 5, 2026, v33 (Google API first): the writing-model setting,
 // on the My packs page next to the tradition setting. Local is the
@@ -40,6 +41,7 @@ import { useEffect, useState } from "react";
 // is never shown back to the browser, only a masked hint.
 
 export default function ModelSettings() {
+  const { t } = useAppLanguage();
   const [backend, setBackend] = useState("local");
   const [savedBackend, setSavedBackend] = useState("local");
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
@@ -67,15 +69,15 @@ export default function ModelSettings() {
     const q = new URLSearchParams(window.location.search);
     const flag = q.get("openrouter");
     if (flag === "connected") {
-      setOauthNote("Signed in with OpenRouter. Your key is saved, and OpenRouter is ready to use.");
+      setOauthNote(t("model.oauthConnected"));
     } else if (flag === "denied") {
-      setOauthError("OpenRouter sign-in was cancelled. You can sign in again, or paste a key below instead.");
+      setOauthError(t("model.oauthDenied"));
     } else if (flag === "error") {
       const reason = q.get("reason");
       setOauthError(
         reason === "expired"
-          ? "That sign-in link expired (they last 10 minutes). Sign in with OpenRouter again, or paste a key below instead."
-          : "OpenRouter sign-in did not finish. Try signing in again, or paste a key below instead."
+          ? t("model.oauthExpired")
+          : t("model.oauthError")
       );
     }
     if (flag) {
@@ -106,7 +108,7 @@ export default function ModelSettings() {
     setTestResult("");
     setSaved("");
     const key = (kind === "openrouter" ? openrouterInput : kind === "grok" ? grokInput : geminiInput).trim();
-    if (!key) { setTestError("Paste a key first, then test it."); return; }
+    if (!key) { setTestError(t("model.needKeyFirst")); return; }
     setTesting(true);
     try {
       const body = { testKey: true };
@@ -118,8 +120,8 @@ export default function ModelSettings() {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok || !data.ok) { setTestError(data.error ?? "Didn't answer. Try again in a little while."); return; }
-      setTestResult(data.message ?? "Your key works.");
+      if (!res.ok || !data.ok) { setTestError(data.error ?? t("model.testNoAnswer")); return; }
+      setTestResult(data.message ?? t("model.keyWorks"));
     } finally {
       setTesting(false);
     }
@@ -132,15 +134,15 @@ export default function ModelSettings() {
     setTestError("");
     const body = {};
     if (backend === "gemini") {
-      if (!geminiInput.trim() && !hasGeminiKey) { setError("Paste your Google key first, then save."); return; }
+      if (!geminiInput.trim() && !hasGeminiKey) { setError(t("model.needGeminiKey")); return; }
       if (geminiInput.trim()) body.geminiApiKey = geminiInput.trim();
     }
     if (backend === "grok") {
-      if (!grokInput.trim() && !hasGrokKey) { setError("Paste your Grok key first, then save."); return; }
+      if (!grokInput.trim() && !hasGrokKey) { setError(t("model.needGrokKey")); return; }
       if (grokInput.trim()) body.grokApiKey = grokInput.trim();
     }
     if (backend === "openrouter") {
-      if (!openrouterInput.trim() && !hasOpenRouterKey) { setError("Paste your OpenRouter key first, then save."); return; }
+      if (!openrouterInput.trim() && !hasOpenRouterKey) { setError(t("model.needOpenRouterKey")); return; }
       if (openrouterInput.trim()) body.openrouterApiKey = openrouterInput.trim();
     }
     body.modelBackend = backend;
@@ -149,7 +151,7 @@ export default function ModelSettings() {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    if (!res.ok || !data.ok) { setError(data.error ?? "Could not save."); return; }
+    if (!res.ok || !data.ok) { setError(data.error ?? t("settings.couldNotSave")); return; }
     setSavedBackend(data.modelBackend);
     setHasGeminiKey(Boolean(data.hasGeminiKey));
     setGeminiMasked(data.geminiKeyMasked || null);
@@ -160,134 +162,138 @@ export default function ModelSettings() {
     if (geminiInput.trim()) setGeminiInput("");
     if (grokInput.trim()) setGrokInput("");
     if (openrouterInput.trim()) setOpenRouterInput("");
+    // Nov 21, 2026, v63 round 2: the saved line used to
+    // carry its own "Saved. " prefix, which doubled with
+    // the "Saved." the render already prints in front of
+    // it. The strings below are the part after "Saved." now.
     setSaved(
       data.modelBackend === "openrouter"
-        ? "Saved. Future packs will use OpenRouter (GLM 5.3 Flash)."
+        ? t("model.savedOpenRouter")
         : data.modelBackend === "grok"
-        ? "Saved. Future packs will use Grok (xAI)."
+        ? t("model.savedGrok")
         : data.modelBackend === "gemini"
-        ? "Saved. Future packs will use Google Gemini (paid)."
-        : "Saved. Future packs will use the local model on this computer."
+        ? t("model.savedGemini")
+        : t("model.savedLocal")
     );
   }
 
   return (
     <section className="fp-card">
-      <h2 style={{ marginTop: 0 }}>Writing model</h2>
-      <p>Choose what writes your packs. Local runs the model on this computer, private and offline, but it is the smaller model. OpenRouter, Grok, and Google all use a much stronger model through their service, and they work on any computer. You bring your own key for the one you pick. Change it any time; it affects future packs, never packs already locked.</p>
-      <p><strong>Nothing changes until you save.</strong> Picking a provider and testing your key do not switch anything yet. Click <strong>Save writing model</strong> below to make your choice active.</p>
+      <h2 style={{ marginTop: 0 }}>{t("model.heading")}</h2>
+      <p>{t("model.intro")}</p>
+      <p><strong>{t("model.saveNoteBold")}</strong> {t("model.saveNotePre")} <strong>{t("model.save")}</strong> {t("model.saveNotePost")}</p>
       <form onSubmit={save}>
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: "block", marginBottom: 6 }}>
-            <input type="radio" name="backend" checked={backend === "local"} onChange={() => setBackend("local")} /> Local, on this computer (private, offline)
+            <input type="radio" name="backend" checked={backend === "local"} onChange={() => setBackend("local")} /> {t("model.providerLocal")}
           </label>
           <label style={{ display: "block", marginBottom: 6 }}>
-            <input type="radio" name="backend" checked={backend === "openrouter"} onChange={() => setBackend("openrouter")} /> OpenRouter (your own key, about $0.01 a pack, recommended)
+            <input type="radio" name="backend" checked={backend === "openrouter"} onChange={() => setBackend("openrouter")} /> {t("model.providerOpenRouter")}
           </label>
           <label style={{ display: "block", marginBottom: 6 }}>
-            <input type="radio" name="backend" checked={backend === "grok"} onChange={() => setBackend("grok")} /> Grok (xAI, your own key, about $0.10 a pack)
+            <input type="radio" name="backend" checked={backend === "grok"} onChange={() => setBackend("grok")} /> {t("model.providerGrok")}
           </label>
           <label style={{ display: "block" }}>
-            <input type="radio" name="backend" checked={backend === "gemini"} onChange={() => setBackend("gemini")} /> Google Gemini (your own key, paid, about $0.23 a pack)
+            <input type="radio" name="backend" checked={backend === "gemini"} onChange={() => setBackend("gemini")} /> {t("model.providerGemini")}
           </label>
         </div>
         {backend === "openrouter" && (
           <div style={{ borderTop: "1px solid #eee", paddingTop: 12, marginBottom: 12 }}>
-            <p><strong>Get your OpenRouter key.</strong> OpenRouter is paid, but a pack costs about $0.01, so $5 of credits covers hundreds of packs. Sign up at openrouter.ai, add credits, and make a key.</p>
+            <p><strong>{t("model.orGetKey")}</strong> {t("model.orIntro")}</p>
             <p>
               <a href="/api/model/openrouter-oauth?start=1" style={{ display: "inline-block", padding: "8px 14px", fontSize: 15, border: "1px solid #2B2E6F", borderRadius: 6, textDecoration: "none" }}>
-                Sign in with OpenRouter
+                {t("model.signInOr")}
               </a>
             </p>
-            <p style={{ marginTop: 4 }}>Signing in takes you to openrouter.ai to approve Flockpath, then brings you back here with your key saved. No copying and pasting. Or paste a key below instead - either way works.</p>
-            {oauthNote && <p><strong>Signed in.</strong> {oauthNote}</p>}
+            <p style={{ marginTop: 4 }}>{t("model.signInNote")}</p>
+            {oauthNote && <p><strong>{t("model.signedInPrefix")}</strong> {oauthNote}</p>}
             {oauthError && <p style={{ color: "darkred" }}>{oauthError}</p>}
-            <p><strong>About credits.</strong> Signing in does not pay for anything: you still need an OpenRouter account with paid credits. The smallest top-up is $5, and a $5 top-up costs $5.80 after the 5.5% card fee. That $5 covers about 500 packs. The free tier cannot build a pack: free models are capped at 50 requests a day, and one pack takes about 64 calls.</p>
+            <p><strong>{t("model.creditsHeading")}</strong> {t("model.creditsBody")}</p>
             <ol>
-              <li>Go to <a href="https://openrouter.ai" target="_blank" rel="noreferrer">openrouter.ai</a> and sign up with Google or email.</li>
-              <li>Add credits (your profile, then <strong>Credits</strong>). $5 is plenty to start.</li>
-              <li>Open <strong>Keys</strong>, then <strong>Create Key</strong>, and copy the key and paste it below.</li>
+              <li>{t("model.orStep1Pre")} <a href="https://openrouter.ai" target="_blank" rel="noreferrer">openrouter.ai</a> {t("model.orStep1Post")}</li>
+              <li>{t("model.orStep2Pre")} <strong>Credits</strong>{t("model.orStep2Post")}</li>
+              <li>{t("model.orStep3Pre")} <strong>Keys</strong>{t("model.orStep3Then")} <strong>Create Key</strong>{t("model.orStep3Post")}</li>
             </ol>
-            <p>Your key stays on this computer only. It is never in a pack, never in a log, and never sent anywhere except to OpenRouter when a pack is written.</p>
-            <p><strong>Or paste a key instead.</strong></p>
+            <p>{t("model.keyStaysOpenRouter")}</p>
+            <p><strong>{t("model.orPasteInstead")}</strong></p>
             <label style={{ display: "block", marginBottom: 6 }}>
-              OpenRouter API key
+              {t("model.orKeyLabel")}
               <input
                 type="password"
                 value={openrouterInput}
                 onChange={(e) => setOpenRouterInput(e.target.value)}
-                placeholder={hasOpenRouterKey ? "A key is already saved (paste a new one to replace it)" : "Paste your key here"}
+                placeholder={hasOpenRouterKey ? t("model.keyPlaceholderSaved") : t("model.keyPlaceholderEmpty")}
                 autoComplete="off"
                 style={{ display: "block", width: "100%", padding: 8, fontSize: 15, marginTop: 4 }}
               />
             </label>
-            {hasOpenRouterKey && openrouterMasked && <p style={{ margin: "4px 0" }}>Saved key: <code>{openrouterMasked}</code></p>}
+            {hasOpenRouterKey && openrouterMasked && <p style={{ margin: "4px 0" }}>{t("model.savedKey")} <code>{openrouterMasked}</code></p>}
             <button type="button" onClick={() => testKey("openrouter")} disabled={testing} style={{ padding: "8px 14px", fontSize: 15, marginRight: 8 }}>
-              {testing ? "Testing..." : "Test my key"}
+              {testing ? t("model.testing") : t("model.testKey")}
             </button>
-            {testResult && <span><strong>Key works.</strong> {testResult}</span>}
+            {testResult && <span><strong>{t("model.keyWorks")}</strong> {testResult}</span>}
             {testError && <span style={{ color: "darkred" }}>{testError}</span>}
           </div>
         )}
         {backend === "grok" && (
           <div style={{ borderTop: "1px solid #eee", paddingTop: 12, marginBottom: 12 }}>
-            <p><strong>Get your Grok key.</strong> Grok is paid, so you will add a card and load credits at console.x.ai. A pack costs about $0.10.</p>
+            <p><strong>{t("model.grokGetKey")}</strong> {t("model.grokIntro")}</p>
             <ol>
-              <li>Go to <a href="https://console.x.ai" target="_blank" rel="noreferrer">console.x.ai</a> and sign in or make an account.</li>
-              <li>Open <strong>API Keys</strong>, then <strong>Create API Key</strong>.</li>
-              <li>Load credits (Billing) so the key can be used, then copy the key and paste it below.</li>
+              <li>{t("model.grokStep1Pre")} <a href="https://console.x.ai" target="_blank" rel="noreferrer">console.x.ai</a> {t("model.grokStep1Post")}</li>
+              <li>{t("model.grokStep2Pre")} <strong>API Keys</strong>{t("model.grokStep2Then")} <strong>Create API Key</strong>.</li>
+              <li>{t("model.grokStep3")}</li>
             </ol>
-            <p>Your key stays on this computer only. It is never in a pack, never in a log, and never sent anywhere except to Grok when a pack is written.</p>
+            <p>{t("model.keyStaysGrok")}</p>
             <label style={{ display: "block", marginBottom: 6 }}>
-              Grok API key
+              {t("model.grokKeyLabel")}
               <input
                 type="password"
                 value={grokInput}
                 onChange={(e) => setGrokInput(e.target.value)}
-                placeholder={hasGrokKey ? "A key is already saved (paste a new one to replace it)" : "Paste your key here"}
+                placeholder={hasGrokKey ? t("model.keyPlaceholderSaved") : t("model.keyPlaceholderEmpty")}
                 autoComplete="off"
                 style={{ display: "block", width: "100%", padding: 8, fontSize: 15, marginTop: 4 }}
               />
             </label>
-            {hasGrokKey && grokMasked && <p style={{ margin: "4px 0" }}>Saved key: <code>{grokMasked}</code></p>}
+            {hasGrokKey && grokMasked && <p style={{ margin: "4px 0" }}>{t("model.savedKey")} <code>{grokMasked}</code></p>}
             <button type="button" onClick={() => testKey("grok")} disabled={testing} style={{ padding: "8px 14px", fontSize: 15, marginRight: 8 }}>
-              {testing ? "Testing..." : "Test my key"}
+              {testing ? t("model.testing") : t("model.testKey")}
             </button>
-            {testResult && <span><strong>Key works.</strong> {testResult}</span>}
+            {testResult && <span><strong>{t("model.keyWorks")}</strong> {testResult}</span>}
             {testError && <span style={{ color: "darkred" }}>{testError}</span>}
           </div>
         )}
         {backend === "gemini" && (
           <div style={{ borderTop: "1px solid #eee", paddingTop: 12, marginBottom: 12 }}>
-            <p><strong>Get your Google key.</strong> Google&apos;s free tier no longer works for new keys, so this is a paid key. Set up billing in AI Studio first, then get the key. A pack costs about $0.23.</p>
+            <p><strong>{t("model.geminiGetKey")}</strong> {t("model.geminiIntro")}</p>
             <ol>
-              <li>Go to <a href="https://aistudio.google.com" target="_blank" rel="noreferrer">aistudio.google.com</a> and sign in with your Google account.</li>
-              <li>Set up billing for your project, then click <strong>Get API key</strong> and <strong>Create API key</strong>.</li>
-              <li>Copy the key and paste it below.</li>
+              <li>{t("model.geminiStep1Pre")} <a href="https://aistudio.google.com" target="_blank" rel="noreferrer">aistudio.google.com</a> {t("model.geminiStep1Post")}</li>
+              <li>{t("model.geminiStep2Pre")} <strong>Get API key</strong> {t("model.geminiStep2Then")} <strong>Create API key</strong>{t("model.geminiStep2Post")}</li>
+              <li>{t("model.geminiStep3")}</li>
             </ol>
-            <p>Your key stays on this computer only. It is never in a pack, never in a log, and never sent anywhere except to Google when a pack is written.</p>
+            <p>{t("model.keyStaysGemini")}</p>
             <label style={{ display: "block", marginBottom: 6 }}>
-              Google API key
+              {t("model.geminiKeyLabel")}
               <input
                 type="password"
                 value={geminiInput}
                 onChange={(e) => setGeminiInput(e.target.value)}
-                placeholder={hasGeminiKey ? "A key is already saved (paste a new one to replace it)" : "Paste your key here"}
+                placeholder={hasGeminiKey ? t("model.keyPlaceholderSaved") : t("model.keyPlaceholderEmpty")}
                 autoComplete="off"
                 style={{ display: "block", width: "100%", padding: 8, fontSize: 15, marginTop: 4 }}
               />
             </label>
-            {hasGeminiKey && geminiMasked && <p style={{ margin: "4px 0" }}>Saved key: <code>{geminiMasked}</code></p>}
+            {hasGeminiKey && geminiMasked && <p style={{ margin: "4px 0" }}>{t("model.savedKey")} <code>{geminiMasked}</code></p>}
             <button type="button" onClick={() => testKey("gemini")} disabled={testing} style={{ padding: "8px 14px", fontSize: 15, marginRight: 8 }}>
-              {testing ? "Testing..." : "Test my key"}
+              {testing ? t("model.testing") : t("model.testKey")}
             </button>
-            {testResult && <span><strong>Key works.</strong> {testResult}</span>}
+            {testResult && <span><strong>{t("model.keyWorks")}</strong> {testResult}</span>}
             {testError && <span style={{ color: "darkred" }}>{testError}</span>}
           </div>
         )}
         {error && <p style={{ color: "darkred" }}>{error}</p>}
-        {saved && <p><strong>Saved.</strong> {saved}</p>}
-        <button style={{ padding: "10px 18px", fontSize: 15 }} disabled={backend === savedBackend && !geminiInput.trim() && !grokInput.trim() && !openrouterInput.trim() && Boolean(saved)}>Save writing model</button>
+        {saved && <p><strong>{t("settings.saved")}</strong> {saved}</p>}
+        <button style={{ padding: "10px 18px", fontSize: 15 }} disabled={backend === savedBackend && !geminiInput.trim() && !grokInput.trim() && !openrouterInput.trim() && Boolean(saved)}>{t("model.save")}</button>
       </form>
     </section>
   );

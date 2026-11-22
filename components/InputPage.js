@@ -2,6 +2,8 @@
 import { useState, useEffect, useRef } from "react";
 
 import JourneyStrip from "./JourneyStrip";
+import { useAppLanguage } from "./AppLanguage";
+import { t as dictT, tf } from "../lib/appStrings.mjs";
 import { BOOK_NAMES, formatRef } from "../lib/refs.mjs";
 
 // Step 7.5 Phase D, step 2: pastor input front door, with
@@ -37,14 +39,18 @@ import { BOOK_NAMES, formatRef } from "../lib/refs.mjs";
 // in plain words, and Continue is offered only when a retry
 // could actually help. A setup failure names the missing
 // piece and the fix instead.
-function plainFailureReason(error) {
+// Nov 21, 2026, v63 round 3: the failure wording is
+// translated through the dictionary (lang is the app
+// language). The embedded server error text in the
+// failWithReason case stays as-is, untranslated.
+function plainFailureReason(error, lang) {
   const e = String(error || "");
   const missing = e.match(/No module named '([^']+)'/i);
-  if (missing) return { setup: true, text: `Building stopped because the app could not start its writing model: a piece is missing on this computer (${missing[1]}). Restart the app from the start script. If it still stops, run the setup steps again to install the missing piece.` };
-  if (/no such file.*\.gguf|failed to load.*model|model file.*(not found|missing)/i.test(e)) return { setup: true, text: "Building stopped because the app could not find or start its writing model file. Restart the app from the start script. If it still stops, the model file needs to be put back where the app expects it." };
+  if (missing) return { setup: true, text: tf(lang, "input.failMissingModule", { piece: missing[1] }) };
+  if (/no such file.*\.gguf|failed to load.*model|model file.*(not found|missing)/i.test(e)) return { setup: true, text: dictT(lang, "input.failModelFile") };
   const last = e.trim().split("\n").filter(Boolean).pop() || "";
-  if (last) return { setup: false, text: `Building stopped because: ${last.slice(0, 200)} Tap Continue below to pick up where it left off.` };
-  return { setup: false, text: "Building stopped before it finished, for a reason the app could not explain. Tap Continue below to pick up where it left off, and if it stops again, the details are in the app log." };
+  if (last) return { setup: false, text: tf(lang, "input.failWithReason", { reason: last.slice(0, 200) }) };
+  return { setup: false, text: dictT(lang, "input.failUnknown") };
 }
 
 // Nov 12, 2026, v55: the build checklist mirrors the worker's
@@ -55,22 +61,28 @@ function plainFailureReason(error) {
 // <Day> / Building <Day> for kids per day, Writing leader
 // questions, Matching a hymn, Finishing the draft. Display
 // only: the labels are copied from the worker, never invented.
+// Nov 21, 2026, v63 round 3: the checklist labels are
+// translated through the dictionary (lang is the app
+// language). Day names come from the day.* keys, first
+// letter capitalized, so Spanish shows "Lunes", not "lunes".
 const BUILD_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-function buildStepLabels(progress, refs) {
+function buildStepLabels(progress, refs, lang) {
   const total = progress?.total ?? 0;
   const n = Array.isArray(refs) && refs.length ? refs.length : 5;
   const base = total ? total - 2 * n - 3 : 2;
-  const labels = ["Gathering study material from Phos"];
-  if (base !== 1) labels.push("Finding the week's angles");
+  const labels = [dictT(lang, "input.buildGathering")];
+  if (base !== 1) labels.push(dictT(lang, "input.buildAngles"));
   for (let i = 0; i < n; i++) {
-    labels.push(`Building ${BUILD_DAYS[i]}`);
-    labels.push(`Building ${BUILD_DAYS[i]} for kids`);
+    const dayRaw = dictT(lang, `day.${BUILD_DAYS[i].toLowerCase()}`);
+    const day = dayRaw.charAt(0).toUpperCase() + dayRaw.slice(1);
+    labels.push(tf(lang, "input.buildDay", { day }));
+    labels.push(tf(lang, "input.buildDayKids", { day }));
   }
-  labels.push("Writing leader questions", "Matching a hymn", "Finishing the draft");
+  labels.push(dictT(lang, "input.buildQuestions"), dictT(lang, "input.buildHymn"), dictT(lang, "input.buildFinish"));
   return labels;
 }
 
-function BuildRing({ progress, status }) {
+function BuildRing({ progress, status, lang }) {
   const total = progress.total || 1;
   const done = status === "ready_for_review" || status === "done" ? total : Math.max(0, (progress.step || 1) - 1);
   const pct = Math.round((done / total) * 100);
@@ -78,20 +90,20 @@ function BuildRing({ progress, status }) {
   const c = 2 * Math.PI * r;
   return (
     <div className="fp-ring-wrap">
-      <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label={`${pct}% built`}>
+      <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label={tf(lang, "input.builtAria", { pct })}>
         <circle cx="52" cy="52" r={r} fill="none" stroke="#e9e2cf" strokeWidth="10" />
         <circle cx="52" cy="52" r={r} fill="none" stroke="#679357" strokeWidth="10" strokeLinecap="round"
           strokeDasharray={c} strokeDashoffset={c * (1 - done / total)} transform="rotate(-90 52 52)" />
         <text x="52" y="50" textAnchor="middle" fontSize="20" fontWeight="700" fill="#121f3d">{pct}%</text>
-        <text x="52" y="68" textAnchor="middle" fontSize="11" fill="#6b6558">built</text>
+        <text x="52" y="68" textAnchor="middle" fontSize="11" fill="#6b6558">{dictT(lang, "input.built")}</text>
       </svg>
-      <p className="fp-ring-label">Step {progress.step} of {total}</p>
+      <p className="fp-ring-label">{tf(lang, "input.stepOf", { step: progress.step, total })}</p>
     </div>
   );
 }
 
-function BuildChecklist({ progress, refs, status }) {
-  const labels = buildStepLabels(progress, refs);
+function BuildChecklist({ progress, refs, status, lang }) {
+  const labels = buildStepLabels(progress, refs, lang);
   const finished = status === "ready_for_review" || status === "done";
   const current = finished ? labels.length + 1 : progress.step;
   return (
@@ -111,6 +123,11 @@ function BuildChecklist({ progress, refs, status }) {
 }
 
 export default function InputPage({ initialTopic, initialJobId }) {
+  // Nov 20, 2026, v62 (item 1): the app language, from the
+  // signed-in account. `language` below is still the PACK's
+  // language ("en" | "es"); the two are different settings,
+  // and the language card on this page says so plainly.
+  const { t, language: appLanguage } = useAppLanguage();
   const [step, setStep] = useState(1);
   const [text, setText] = useState("");
   const [topic, setTopic] = useState(initialTopic ?? "");
@@ -137,15 +154,20 @@ export default function InputPage({ initialTopic, initialJobId }) {
     e.preventDefault();
     if (!ytUrl.trim() || ytBusy) return;
     setYtBusy(true);
-    setYtStatus("Importing from YouTube... captions take seconds; a full transcription takes several minutes for a long sermon. Keep this page open.");
+    // Nov 21, 2026, v63 round 3: the import status wording
+    // is translated here. data.title is the video's own title
+    // from the API and stays as-is; data.error (server text)
+    // stays as-is too. The "captions" / "transcribed audio"
+    // choice is this component's own wording, so it is wired.
+    setYtStatus(t("input.ytImporting"));
     try {
       const res = await fetch("/api/youtube-import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: ytUrl, language }) });
       const data = await res.json().catch(() => ({}));
-      if (!data.ok) throw new Error(data.error || "The import failed.");
+      if (!data.ok) throw new Error(data.error || t("input.ytFailed"));
       setText(data.text);
-      setYtStatus(`Imported ${Number(data.chars || 0).toLocaleString()} characters from "${data.title || "this video"}" (${data.source === "captions" ? "captions" : "transcribed audio"}). Check the text below, then press Extract refs as usual.`);
+      setYtStatus(tf(appLanguage, "input.ytImported", { chars: Number(data.chars || 0).toLocaleString(), title: data.title || t("input.ytThisVideo"), source: data.source === "captions" ? t("input.ytCaptions") : t("input.ytTranscribed") }));
     } catch (err) {
-      setYtStatus(err.message || "The import failed.");
+      setYtStatus(err.message || t("input.ytFailed"));
     }
     setYtBusy(false);
   }
@@ -235,8 +257,10 @@ export default function InputPage({ initialTopic, initialJobId }) {
   async function onGenerate() {
     if (!confirmed?.complete) return;
     const passage = genPassage.trim() || topic.trim();
-    if (!passage) { setStatus("Type a passage name for this pack first, for example Romans 8."); return; }
-    setStatus("Starting your pack build...");
+    // The example passage follows the PACK's language, like
+    // the sermon box placeholder below, not the app language.
+    if (!passage) { setStatus(tf(appLanguage, "input.needPassage", { example: language === "es" ? "Romanos 8" : "Romans 8" })); return; }
+    setStatus(t("input.startingBuild"));
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -246,7 +270,7 @@ export default function InputPage({ initialTopic, initialJobId }) {
     if (!data.ok && data.error) { setStatus(data.error); return; }
     setGenJob(data.job);
     try { localStorage.setItem("flockpath-active-job", data.job.id); } catch {}
-    setStatus("Your pack is building. See the status panel below; it is not finished yet.");
+    setStatus(t("input.buildingSeePanel"));
   }
 
   // Nov 5, 2026, round-2 instant feedback: the old Check
@@ -259,23 +283,23 @@ export default function InputPage({ initialTopic, initialJobId }) {
   // the panel without flashing feedback.
   async function onCheckJob(manual = false) {
     if (!genJob?.id) return;
-    if (manual) { setChecking(true); setStatus("Checking build status..."); }
+    if (manual) { setChecking(true); setStatus(t("input.checkingBuild")); }
     try {
       const res = await fetch(`/api/generate?id=${genJob.id}`);
       const data = await res.json();
-      if (!data.ok) { setStatus(data.error || "That build was not found."); return; }
+      if (!data.ok) { setStatus(data.error || t("input.buildNotFound")); return; }
       setGenJob(data.job);
       const j = data.job;
       if (manual) setLastChecked(new Date());
       if (j.status !== "failed") setFailedSetup(false);
-      if (j.status === "done") setStatus(`Finished. "${jobName(j)}" is in your library.`);
-      else if (j.status === "ready_for_review") setStatus(isMember ? "Ready for your review. It is a draft, not a saved study, until you review it and save it." : "Ready for your review. It is a draft, not a locked pack, until you approve it.");
+      if (j.status === "done") setStatus(tf(appLanguage, "input.finishedInLibrary", { name: jobName(j) }));
+      else if (j.status === "ready_for_review") setStatus(t(isMember ? "input.readyReviewMember" : "input.readyReviewPastor"));
       else if (j.status === "failed") {
-        const r = plainFailureReason(j.error);
+        const r = plainFailureReason(j.error, appLanguage);
         setFailedSetup(r.setup);
         setStatus(r.text);
       }
-      else if (manual) setStatus("Still building. The status panel below shows the current step.");
+      else if (manual) setStatus(t("input.stillBuildingPanel"));
     } finally {
       if (manual) setChecking(false);
     }
@@ -283,25 +307,25 @@ export default function InputPage({ initialTopic, initialJobId }) {
 
   async function onContinueJob() {
     if (!genJob?.id) return;
-    setStatus("Continuing this build from its last finished section...");
+    setStatus(t("input.continuingBuild"));
     const res = await fetch("/api/generate/continue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: genJob.id }),
     });
     const data = await res.json();
-    if (!data.ok) { setStatus(data.error || "Could not continue this build."); return; }
+    if (!data.ok) { setStatus(data.error || t("input.couldNotContinue")); return; }
     setGenJob(data.job);
     try { localStorage.setItem("flockpath-active-job", data.job.id); } catch {}
-    setStatus("Continued. Finished days are kept, only the missing ones are built.");
+    setStatus(t("input.continuedBuild"));
   }
 
   async function onTopicSearch(e, topicOverride) {
     if (e) e.preventDefault();
     const q = (topicOverride ?? topic).trim();
     if (topicOverride) setTopic(topicOverride);
-    if (!q) { setStatus("Type a topic first, for example grace."); return; }
-    setStatus("Searching Phos for this topic...");
+    if (!q) { setStatus(t("input.needTopic")); return; }
+    setStatus(t("input.searchingTopic"));
     setTopicResult(null);
     setTopicPicked([]);
     setTopicMessage("");
@@ -339,22 +363,22 @@ export default function InputPage({ initialTopic, initialJobId }) {
   }
 
   function useTopicRefs() {
-    if (!topicPicked.length) { setTopicMessage("Pick at least one suggested passage first."); return; }
+    if (!topicPicked.length) { setTopicMessage(t("input.pickPassageFirst")); return; }
     const lower = text.toLowerCase();
     const fresh = topicPicked.filter((r) => !refForms(r).some((f) => lower.includes(f.toLowerCase())));
     if (!fresh.length) {
       setTopicPicked([]);
-      setTopicMessage("Those passages are already in your verse list above.");
+      setTopicMessage(t("input.alreadyInList"));
       return;
     }
     setText((t) => (t ? `${t}\n` : "") + fresh.join(", "));
     setTopicPicked([]);
-    setTopicMessage(`Added ${fresh.join(", ")} to your verse list above. Press Extract refs to check them.`);
+    setTopicMessage(tf(appLanguage, "input.addedToList", { refs: fresh.join(", ") }));
   }
 
   async function onExtract(e) {
     e.preventDefault();
-    setStatus("Extracting refs...");
+    setStatus(t("input.extracting"));
     setResult(null);
     setConfirmed(null);
     const res = await fetch("/api/extract", {
@@ -374,22 +398,22 @@ export default function InputPage({ initialTopic, initialJobId }) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (/\.pdf$/i.test(file.name)) {
-      setStatus(`Reading ${file.name}...`);
+      setStatus(tf(appLanguage, "input.readingFile", { file: file.name }));
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/upload", { method: "POST", body: form });
       const data = await res.json();
-      if (!data.ok) { setStatus(data.error || "Could not read this PDF."); return; }
+      if (!data.ok) { setStatus(data.error || t("input.couldNotReadPdf")); return; }
       setText(data.text);
-      setStatus(`Loaded ${file.name}: ${data.pages} page${data.pages === 1 ? "" : "s"}, ${data.chars} characters. Press Extract refs to check it. The file itself is not stored.`);
+      setStatus(tf(appLanguage, data.pages === 1 ? "input.loadedPdfOne" : "input.loadedPdfMany", { file: file.name, pages: data.pages, chars: data.chars }));
       return;
     }
     if (!/\.txt$|\.md$/i.test(file.name)) {
-      setStatus("Only .txt, .md, or .pdf files are accepted. A scanned-image PDF has no text to extract.");
+      setStatus(t("input.onlyTextFiles"));
       return;
     }
     setText(await file.text());
-    setStatus(`Loaded ${file.name}. Press Extract refs to check it.`);
+    setStatus(tf(appLanguage, "input.loadedFile", { file: file.name }));
   }
 
   function toggle(ref) {
@@ -404,8 +428,8 @@ export default function InputPage({ initialTopic, initialJobId }) {
       complete: plan.length === dayCount,
     });
     setStatus(plan.length === dayCount
-      ? "Confirmed. This plan is ready for the last step."
-      : `Confirmed, but under ${dayCount} verses. Add verses before building, the tool will not pad the plan.`);
+      ? t("input.confirmedReady")
+      : tf(appLanguage, "input.confirmedUnder", { n: dayCount }));
     if (plan.length === dayCount) setStep(3);
   }
 
@@ -416,13 +440,13 @@ export default function InputPage({ initialTopic, initialJobId }) {
     return j?.plan?.passage || genPassage || topic || "this pack";
   }
 
-  function jobStatusWords(j) {
+  function jobStatusWords(j, lang) {
     if (!j) return "";
-    if (j.status === "queued") return "Waiting to start";
-    if (j.status === "running") return "Building now";
-    if (j.status === "ready_for_review") return "Ready for your review";
-    if (j.status === "done") return "Finished";
-    if (j.status === "failed") return "Stopped";
+    if (j.status === "queued") return dictT(lang, "input.jobWaiting");
+    if (j.status === "running") return dictT(lang, "input.jobBuilding");
+    if (j.status === "ready_for_review") return dictT(lang, "input.jobReady");
+    if (j.status === "done") return dictT(lang, "input.jobFinished");
+    if (j.status === "failed") return dictT(lang, "input.jobStopped");
     return j.status;
   }
 
@@ -435,7 +459,7 @@ export default function InputPage({ initialTopic, initialJobId }) {
   // 30 minutes on an older computer (the Nov 4 Mac speed
   // run finished a full pack in about 3 minutes). Sections
   // vary, so this is a guide, not a promise.
-  function timeLeft(j) {
+  function timeLeft(j, lang) {
     if (!j?.progress || j.status !== "running" || !j.createdAt) return "";
     const done = j.progress.step - 1;
     if (done < 1) return "";
@@ -443,7 +467,7 @@ export default function InputPage({ initialTopic, initialJobId }) {
     if (!(elapsed > 0)) return "";
     const left = (elapsed / done) * (j.progress.total - j.progress.step + 1);
     const mins = Math.max(1, Math.round(left / 60000));
-    return `About ${mins} minute${mins === 1 ? "" : "s"} left (estimate).`;
+    return tf(lang, mins === 1 ? "input.timeLeftOne" : "input.timeLeftMany", { n: mins });
   }
 
   const jobActive = genJob && ["queued", "running"].includes(genJob.status);
@@ -455,91 +479,93 @@ export default function InputPage({ initialTopic, initialJobId }) {
 
   return (
     <main className="fp-main">
-      <JourneyStrip stage={journeyStage} member={isMember} />
-      <h1>Start a pack</h1>
+      <JourneyStrip stage={journeyStage} member={isMember} labels={{ start: t("journey.start"), building: t("journey.building"), review: t("journey.review"), approve: t("journey.approve"), share: t("journey.share"), save: t("journey.save"), print: t("journey.print") }} />
+      <h1>{t("input.title")}</h1>
       {isMember ? (
-        <p>Three steps, one at a time: what the study is about, which verses it uses, then its name and build. Nothing is saved until you review it and save it as your personal study.</p>
+        <p>{t("input.introStudies")}</p>
       ) : (
-        <p>Three steps, one at a time: what the pack is about, which verses it uses, then its name and build.</p>
+        <p>{t("input.introPacks")}</p>
       )}
 
       {step === 1 && (
         <section>
-          <h2>Step 1 of 3: What is this pack about?</h2>
+          <h2>{t("input.step1")}</h2>
           <section className="fp-card">
-            <h3 style={{ marginTop: 0 }}>How it will work</h3>
+            <h3 style={{ marginTop: 0 }}>{t("input.howItWorks")}</h3>
             <ol style={{ margin: "0 0 8px", paddingLeft: 20 }}>
-              <li>You give the passage: a sermon, a verse list, or a topic.</li>
-              <li>You check the verses. Nothing builds until you confirm them.</li>
-              <li>Flockpath writes one day at a time, then you review and approve it.</li>
+              <li>{t("input.howStep1")}</li>
+              <li>{t("input.howStep2")}</li>
+              <li>{t("input.howStep3")}</li>
             </ol>
-            <p style={{ marginBottom: 0 }}>~10 minutes with OpenRouter, Grok, or Google, or up to 30 minutes with the local model on an older computer. About a penny a family per week on OpenRouter.</p>
+            <p style={{ marginBottom: 0 }}>{t("input.howTime")}</p>
           </section>
           <div className="fp-card">
-            <h3 style={{ marginTop: 0 }}>Language and Bible translation</h3>
+            <h3 style={{ marginTop: 0 }}>{t("input.languageHeading")}</h3>
+            <p>{t("input.packLanguageClarify")}</p>
             <p>
-              <label><input type="radio" name="pack-language" checked={language === "en"} onChange={() => { setLanguage("en"); setTranslation("bsb"); }} /> English</label>{" "}
-              <label><input type="radio" name="pack-language" checked={language === "es"} onChange={() => { setLanguage("es"); setTranslation("rv1909"); }} /> Español</label>
+              <label><input type="radio" name="pack-language" checked={language === "en"} onChange={() => { setLanguage("en"); setTranslation("bsb"); }} /> {t("input.packEnglish")}</label>{" "}
+              <label><input type="radio" name="pack-language" checked={language === "es"} onChange={() => { setLanguage("es"); setTranslation("rv1909"); }} /> {t("input.packSpanish")}</label>
             </p>
             {language === "es" ? (
               <>
                 <p>
-                  <label><input type="radio" name="pack-translation" checked={translation === "rv1909"} onChange={() => setTranslation("rv1909")} /> Reina-Valera 1909 (public domain)</label>{" "}
-                  <label><input type="radio" name="pack-translation" checked={translation === "spabes"} onChange={() => setTranslation("spabes")} /> La Biblia en Español Sencillo 2026 (public domain)</label>
+                  <label><input type="radio" name="pack-translation" checked={translation === "rv1909"} onChange={() => setTranslation("rv1909")} /> Reina-Valera 1909 {t("input.publicDomainTag")}</label>{" "}
+                  <label><input type="radio" name="pack-translation" checked={translation === "spabes"} onChange={() => setTranslation("spabes")} /> La Biblia en Español Sencillo 2026 {t("input.publicDomainTag")}</label>
                 </p>
-                <p>Both Spanish texts are in the public domain. The pack is written in Spanish, and every verse is filled in from the Spanish Bible text you pick here, never written by the model. Topic search below is in English (Phos is an English library); you can still paste Spanish verses directly, with or without accents, for example Génesis 1:1 or Salmos 23:1.</p>
+                <p>{t("input.spanishNote")}</p>
+                <p>{t("input.narrationNote")}</p>
               </>
             ) : (
-              <p>English packs use the Berean Standard Bible (public domain). Every verse is filled in from that text, never written by the model.</p>
+              <p>{t("input.englishNote")}</p>
             )}
           </div>
           {isMember ? (
-            <p>Paste a sermon, a verse list, or a passage. The tool finds the verse references in what you pasted, shows them back, and you correct them before anything is built. A topic alone never builds a study: search a topic, pick passages from Phos, then extract and confirm them. If you paste a whole sermon, the cover will carry a short summary and one quote from it. If you start from a topic instead, you can still add your own short note for the cover on the review page.</p>
+            <p>{t("input.pasteParaMember")}</p>
           ) : (
-            <p>Paste your sermon, a verse list, or a passage. The tool finds the verse references in what you pasted, shows them back, and you correct them before anything is built. A topic alone never builds a pack: search a topic, pick passages from Phos, then extract and confirm them. If you paste your whole sermon, the cover will carry a short summary and one quote from it. If you start from a topic instead, you can still add your own short note for the cover on the review page.</p>
+            <p>{t("input.pastePara")}</p>
           )}
           <form onSubmit={onExtract}>
-            <p style={{ marginBottom: 4 }}><strong>Suggested topics</strong> - tap one to search Phos for it:</p>
+            <p style={{ marginBottom: 4 }}><strong>{t("input.suggestedTopics")}</strong> - {t("input.suggestedTopicsSuffix")}</p>
             <div className="fp-chip-row">
               {["Forgiveness", "Grace", "Psalm 23", "The Power of the Cross", "Love", "Shepherd"].map((t) => (
                 <button key={t} type="button" className="fp-chip" aria-pressed={topic === t} onClick={() => { setTopic(t); onTopicSearch(null, t); }}>{t}</button>
               ))}
             </div>
-            <label>Topic (optional, search Phos for suggested passages)<br />
-              <input value={topic} onChange={(e) => setTopic(e.target.value)} style={{ width: "100%", padding: 8 }} placeholder="e.g. shepherd, grace" />
+            <label>{t("input.topicLabel")}<br />
+              <input value={topic} onChange={(e) => setTopic(e.target.value)} style={{ width: "100%", padding: 8 }} placeholder={t("input.topicPh")} />
             </label>
-            <p><button type="button" onClick={(e) => onTopicSearch(e)}>Search topic in Phos</button></p>
-            <p><label>Sermon paste or verse list<br />
+            <p><button type="button" onClick={(e) => onTopicSearch(e)}>{t("input.searchTopic")}</button></p>
+            <p><label>{t("input.sermonLabel")}<br />
               <textarea value={text} onChange={(e) => setText(e.target.value)} rows={10} style={{ width: "100%", padding: 8 }} placeholder={language === "es" ? "Juan 3:16, Salmos 23:1-3, o pega tu sermón completo aquí" : "John 3:16, Psalm 23:1-3, or paste your whole sermon here"} />
             </label></p>
-            <p><label>Or upload a .txt, .md, or .pdf file: <input type="file" accept=".txt,.md,.pdf" onChange={onFile} /></label></p>
-            <p>PDFs are read for their text only, then the file is deleted. A scanned-image PDF has no text to read, so paste its text instead if that happens.</p>
-            <p><label>Or import a sermon from YouTube<br />
+            <p><label>{t("input.uploadLabel")} <input type="file" accept=".txt,.md,.pdf" onChange={onFile} /></label></p>
+            <p>{t("input.pdfNote")}</p>
+            <p><label>{t("input.youtubeLabel")}<br />
               <input value={ytUrl} onChange={(e) => setYtUrl(e.target.value)} style={{ width: "100%", padding: 8 }} placeholder="https://www.youtube.com/watch?v=..." />
             </label></p>
-            <p><button type="button" onClick={onYoutubeImport} disabled={ytBusy || !ytUrl.trim()}>{ytBusy ? "Importing..." : "Import from YouTube"}</button></p>
-            <p>Flockpath fetches the sermon&apos;s words from its captions first, or transcribes the audio on this computer when the video has no captions. The words land in the box above for you to check. If YouTube asks for a sign-in, paste the sermon text instead.</p>
+            <p><button type="button" onClick={onYoutubeImport} disabled={ytBusy || !ytUrl.trim()}>{ytBusy ? t("input.youtubeImporting") : t("input.youtubeImport")}</button></p>
+            <p>{t("input.youtubeNote")}</p>
             {ytStatus && <p><strong>{ytStatus}</strong></p>}
-            <button type="submit" className="fp-btn-mobile-block">Extract refs</button>
+            <button type="submit" className="fp-btn-mobile-block">{t("input.extractRefs")}</button>
           </form>
           {topicResult && (
             <section className="fp-card" style={{ marginTop: 16 }}>
-              <h3>Suggested passages for &quot;{topicResult.topic}&quot;</h3>
-              <p>Curated topical passages first, from dictionary lists in Phos. Devotional anchors second, and noisier. Pick passages, then press Use picked passages, then Extract refs. The tool never picks a passage for you.</p>
-              <p>Each list shows the 25 most-cited passages for this topic. If a verse you want is not listed, type it in the verse list above and it joins the same list.</p>
-              <h4>Topical passages</h4>
+              <h3>{tf(appLanguage, "input.topicResultsHeading", { topic: topicResult.topic })}</h3>
+              <p>{t("input.topicResultsIntro")}</p>
+              <p>{t("input.topicResultsNote")}</p>
+              <h4>{t("input.topicalPassages")}</h4>
               {topicResult.topical.length ? (
                 <ul>{topicResult.topical.map((r) => (
-                  <li key={r.reference}><label><input type="checkbox" checked={topicPicked.includes(r.reference)} onChange={() => toggleTopic(r.reference)} /> {formatRef(r.reference)} (in {r.count} dictionary {r.count === 1 ? "entry" : "entries"})</label></li>
+                  <li key={r.reference}><label><input type="checkbox" checked={topicPicked.includes(r.reference)} onChange={() => toggleTopic(r.reference)} /> {formatRef(r.reference)} ({r.count === 1 ? tf(appLanguage, "input.inDictOne", { n: r.count }) : tf(appLanguage, "input.inDictMany", { n: r.count })})</label></li>
                 ))}</ul>
-              ) : <p>No dictionary entry lists verses for this word.</p>}
-              <h4>Devotional anchors (secondary)</h4>
+              ) : <p>{t("input.noDictEntry")}</p>}
+              <h4>{t("input.devotionalAnchors")}</h4>
               {topicResult.devotionalAnchors.length ? (
                 <ul>{topicResult.devotionalAnchors.map((r) => (
-                  <li key={r.reference}><label><input type="checkbox" checked={topicPicked.includes(r.reference)} onChange={() => toggleTopic(r.reference)} /> {formatRef(r.reference)} ({r.count} devotional{r.count === 1 ? "" : "s"}, e.g. {r.example})</label></li>
+                  <li key={r.reference}><label><input type="checkbox" checked={topicPicked.includes(r.reference)} onChange={() => toggleTopic(r.reference)} /> {formatRef(r.reference)} ({tf(appLanguage, r.count === 1 ? "input.devotionalCountOne" : "input.devotionalCountMany", { n: r.count, example: r.example })})</label></li>
                 ))}</ul>
-              ) : <p>No devotional anchor found for this word.</p>}
-              <button type="button" onClick={useTopicRefs}>Use picked passages</button>
+              ) : <p>{t("input.noDevotionalAnchor")}</p>}
+              <button type="button" onClick={useTopicRefs}>{t("input.usePicked")}</button>
               {topicMessage && <p><strong>{topicMessage}</strong></p>}
             </section>
           )}
@@ -548,74 +574,74 @@ export default function InputPage({ initialTopic, initialJobId }) {
 
       {step === 2 && result && (
         <section>
-          <h2>Step 2 of 3: Which verses should it use?</h2>
-          <p>Uncheck any passage that should not be in the pack. The plan below uses only the checked passages, in order.</p>
+          <h2>{t("input.step2")}</h2>
+          <p>{t("input.uncheckIntro")}</p>
           <ul>
             {result.refs.map((r, i) => (
               <li key={i}>
                 <label>
                   <input type="checkbox" disabled={r.kind !== "verse" && r.kind !== "range"} checked={(r.kind === "verse" || r.kind === "range") ? kept.includes(r.reference) : false} onChange={() => toggle(r.reference)} />
-                  {" "}{formatRef(r.reference, language)} ({r.kind === "range" ? "passage" : r.kind}){r.note ? ` - ${r.note}` : ""}
+                  {" "}{formatRef(r.reference, language)} ({r.kind === "range" ? t("input.kindPassage") : r.kind}){r.note ? ` - ${r.note}` : ""}
                 </label>
               </li>
             ))}
           </ul>
-          <h3>How long should this pack run?</h3>
+          <h3>{t("input.howLong")}</h3>
           <p>
             {[3, 5, 7].map((n) => (
               <label key={n} style={{ marginRight: 16 }}>
-                <input type="radio" name="dayCount" checked={dayCount === n} onChange={() => setDayCount(n)} /> {n} days{n === 3 ? " (Mon-Wed, a short week)" : n === 5 ? " (Mon-Fri, the usual week)" : " (Mon-Sun, the full week)"}
+                <input type="radio" name="dayCount" checked={dayCount === n} onChange={() => setDayCount(n)} /> {n === 3 ? t("input.dayCount3") : n === 5 ? t("input.dayCount5") : t("input.dayCount7")}
               </label>
             ))}
           </p>
-          <h3>Proposed {dayCount}-day plan, from checked passages</h3>
+          <h3>{tf(appLanguage, "input.proposedPlan", { n: dayCount })}</h3>
           <ol>{kept.slice(0, dayCount).map((r) => <li key={r}>{formatRef(r, language)}</li>)}</ol>
-          {kept.length > dayCount && <p>Only the first {dayCount} checked passages are used in the plan.</p>}
-          {kept.length < dayCount && <p>Add verses to reach {dayCount}. The tool will not invent the missing days.</p>}
-          <p><button onClick={onConfirm}>Confirm these passages</button> <button type="button" onClick={() => setStep(1)}>Back to step 1</button></p>
+          {kept.length > dayCount && <p>{tf(appLanguage, "input.onlyFirst", { n: dayCount })}</p>}
+          {kept.length < dayCount && <p>{tf(appLanguage, "input.addVerses", { n: dayCount })}</p>}
+          <p><button onClick={onConfirm}>{t("input.confirm")}</button> <button type="button" onClick={() => setStep(1)}>{t("input.backStep1")}</button></p>
         </section>
       )}
       {step === 2 && !result && (
         <section>
-          <h2>Step 2 of 3: Which verses should it use?</h2>
-          <p>No verses extracted yet. Go back to step 1 and press Extract refs.</p>
-          <p><button type="button" onClick={() => setStep(1)}>Back to step 1</button></p>
+          <h2>{t("input.step2")}</h2>
+          <p>{t("input.noVersesYet")}</p>
+          <p><button type="button" onClick={() => setStep(1)}>{t("input.backStep1")}</button></p>
         </section>
       )}
 
       {step === 3 && confirmed && (
         <section>
-          <h2>Step 3 of 3: What should it be called?</h2>
-          <p>Topic: {topic || "(none given)"}</p>
+          <h2>{t("input.step3")}</h2>
+          <p>{tf(appLanguage, "input.topicLine", { topic: topic || t("input.topicNone") })}</p>
           <ol>{confirmed.plan.map((r) => <li key={r}>{formatRef(r, language)}</li>)}</ol>
-          <p>{confirmed.complete ? "Ready to build. When it runs, building a pack takes ~10 minutes with OpenRouter, Grok, or Google, or up to 30 minutes with the local model on an older computer, because the model writes each day separately and every verse is checked before locking." : `Under ${dayCount} verses. Building waits until the plan is complete.`}</p>
+          <p>{confirmed.complete ? t("input.readyToBuild") : tf(appLanguage, "input.underVerses", { n: dayCount })}</p>
           {confirmed.complete && (
             <div className="fp-card" style={{ marginTop: 16 }}>
-              <h3>Build this pack</h3>
-              <label>Name for the pack<br />
-                <input value={genPassage} onChange={(e) => setGenPassage(e.target.value)} style={{ width: "100%", padding: 8 }} placeholder="e.g. Romans 8" />
+              <h3>{t("input.buildPack")}</h3>
+              <label>{t("input.packNameLabel")}<br />
+                <input value={genPassage} onChange={(e) => setGenPassage(e.target.value)} style={{ width: "100%", padding: 8 }} placeholder={t("input.packNamePh")} />
               </label>
-              <p><button type="button" className="fp-btn-mobile-block" onClick={onGenerate} disabled={jobActive}>Start building this pack</button></p>
-              {jobActive && <p>A build is already running. See the status panel below.</p>}
-              <p>What happens when you tap this button: Flockpath starts building your pack. It writes one day at a time and checks every verse, so most packs take ~10 minutes with OpenRouter, Grok, or Google, and up to 30 minutes with the local model on an older computer. With OpenRouter, Grok, or Google the writing happens through that provider&apos;s service; with Local it happens here on your computer. You can leave this page and come back; when the draft is ready it waits for your review, and {isMember ? "nothing is saved until you review it and save it as your personal study." : "nothing locks until you approve it."}</p>
+              <p><button type="button" className="fp-btn-mobile-block" onClick={onGenerate} disabled={jobActive}>{t("input.startBuilding")}</button></p>
+              {jobActive && <p>{t("input.buildAlreadyRunning")}</p>}
+              <p>{tf(appLanguage, "input.whatHappens", { ending: t(isMember ? "input.whatHappensMember" : "input.whatHappensPastor") })}</p>
               {jobDone && (
                 <p>
-                  {genJob.draftId && <a href={`/review?draft=${genJob.draftId}`}>{isMember ? "Review this draft" : "Review and approve this draft"}</a>}
-                  {genJob.packId && <> <a href={`/pack/${genJob.packId}`}>Open the finished pack</a> | <a href={`/api/packs/pdf-file?id=${encodeURIComponent(genJob.packId)}`}>Download print PDF</a></>}
-                  {!genJob.packId && genJob.pdf && <> <a href={genJob.pdf}>Download print PDF</a></>}
+                  {genJob.draftId && <a href={`/review?draft=${genJob.draftId}`}>{isMember ? t("input.reviewStudy") : t("input.reviewDraft")}</a>}
+                  {genJob.packId && <> <a href={`/pack/${genJob.packId}`}>{t("input.openFinishedPack")}</a> | <a href={`/api/packs/pdf-file?id=${encodeURIComponent(genJob.packId)}`}>{t("packs.downloadPdf")}</a></>}
+                  {!genJob.packId && genJob.pdf && <> <a href={genJob.pdf}>{t("packs.downloadPdf")}</a></>}
                 </p>
               )}
-              <p>If building stops before it finishes, tap Continue from last finished section in the status panel below. It does not start over: finished days and questions are kept, only the missing sections are built.</p>
+              <p>{t("input.ifStopsContinue")}</p>
             </div>
           )}
-          <p><button type="button" onClick={() => setStep(2)}>Back to step 2</button></p>
+          <p><button type="button" onClick={() => setStep(2)}>{t("input.backStep2")}</button></p>
         </section>
       )}
       {step === 3 && !confirmed && (
         <section>
-          <h2>Step 3 of 3: What should it be called?</h2>
-          <p>No confirmed plan yet. Go back and confirm your verses first.</p>
-          <p><button type="button" onClick={() => setStep(2)}>Back to step 2</button></p>
+          <h2>{t("input.step3")}</h2>
+          <p>{t("input.noPlanYet")}</p>
+          <p><button type="button" onClick={() => setStep(2)}>{t("input.backStep2")}</button></p>
         </section>
       )}
 
@@ -629,34 +655,34 @@ export default function InputPage({ initialTopic, initialJobId }) {
       {status && <p><strong>{status}</strong></p>}
 
       {genJob && (
-        <section className="fp-build-panel" aria-label="Build progress">
+        <section className="fp-build-panel" aria-label={t("input.buildPanelAria")}>
           <h2 style={{ marginTop: 0, fontSize: 24 }}>
-            {genJob.status === "running" || genJob.status === "queued" ? "Your pack is being built!" : genJob.status === "ready_for_review" ? "Your pack is ready for review!" : genJob.status === "done" ? "Your pack is finished!" : "Building stopped."}
+            {genJob.status === "running" || genJob.status === "queued" ? t("input.buildingNow") : genJob.status === "ready_for_review" ? t("input.readyReview") : genJob.status === "done" ? t("input.finished") : t("input.stopped")}
           </h2>
           <div className="fp-build-top">
-            {genJob.progress && <BuildRing progress={genJob.progress} status={genJob.status} />}
+            {genJob.progress && <BuildRing progress={genJob.progress} status={genJob.status} lang={appLanguage} />}
             <div style={{ flex: "1 1 300px" }}>
-              <p style={{ fontSize: 18, marginTop: 0 }}><strong>&ldquo;{jobName(genJob)}&rdquo;</strong> - {jobStatusWords(genJob)}.</p>
+              <p style={{ fontSize: 18, marginTop: 0 }}><strong>&ldquo;{jobName(genJob)}&rdquo;</strong> - {jobStatusWords(genJob, appLanguage)}.</p>
               {genJob.progress && (genJob.status === "queued" || genJob.status === "running") && (
-                <p style={{ fontSize: 17 }}>Step {genJob.progress.step} of {genJob.progress.total}: {genJob.progress.label}.</p>
+                <p style={{ fontSize: 17 }}>{tf(appLanguage, "input.stepLine", { step: genJob.progress.step, total: genJob.progress.total, label: genJob.progress.label })}</p>
               )}
-              {timeLeft(genJob) && <p style={{ fontSize: 16 }}>{timeLeft(genJob)}</p>}
+              {timeLeft(genJob, appLanguage) && <p style={{ fontSize: 16 }}>{timeLeft(genJob, appLanguage)}</p>}
             </div>
           </div>
-          {genJob.progress && <BuildChecklist progress={genJob.progress} refs={genJob.plan?.refs} status={genJob.status} />}
+          {genJob.progress && <BuildChecklist progress={genJob.progress} refs={genJob.plan?.refs} status={genJob.status} lang={appLanguage} />}
           <p>
-            <button type="button" className="fp-btn-mobile-block" onClick={() => onCheckJob(true)} disabled={checking} style={{ marginRight: 8 }}>{checking ? "Checking..." : "Check build status"}</button>
-            {(genJob.status === "running" || (genJob.status === "failed" && !failedSetup)) && <button type="button" className="fp-btn-gold fp-btn-mobile-block" onClick={onContinueJob} style={{ marginRight: 8 }}>Continue from last finished section</button>}
-            {genJob.draftId && <a href={`/review?draft=${genJob.draftId}`}>{isMember ? "Review this draft" : "Review and approve this draft"}</a>}
-            {genJob.packId && <> <a href={`/pack/${genJob.packId}`}>Open the finished pack</a> | <a href={`/api/packs/pdf-file?id=${encodeURIComponent(genJob.packId)}`}>Download print PDF</a></>}
-            {!genJob.packId && genJob.pdf && <> <a href={genJob.pdf}>Download print PDF</a></>}
+            <button type="button" className="fp-btn-mobile-block" onClick={() => onCheckJob(true)} disabled={checking} style={{ marginRight: 8 }}>{checking ? t("input.checking") : t("input.checkStatus")}</button>
+            {(genJob.status === "running" || (genJob.status === "failed" && !failedSetup)) && <button type="button" className="fp-btn-gold fp-btn-mobile-block" onClick={onContinueJob} style={{ marginRight: 8 }}>{t("input.continue")}</button>}
+            {genJob.draftId && <a href={`/review?draft=${genJob.draftId}`}>{isMember ? t("input.reviewStudy") : t("input.reviewDraft")}</a>}
+            {genJob.packId && <> <a href={`/pack/${genJob.packId}`}>{t("input.openFinishedPack")}</a> | <a href={`/api/packs/pdf-file?id=${encodeURIComponent(genJob.packId)}`}>{t("packs.downloadPdf")}</a></>}
+            {!genJob.packId && genJob.pdf && <> <a href={genJob.pdf}>{t("packs.downloadPdf")}</a></>}
           </p>
-          {lastChecked && <p>Last checked {lastChecked.toLocaleTimeString()}.</p>}
-          <p>You can leave this page and come back. Your pack keeps building here on your computer, and this page picks up its status when you return.</p>
+          {lastChecked && <p>{tf(appLanguage, "input.lastChecked", { time: lastChecked.toLocaleTimeString() })}</p>}
+          <p>{t("input.leaveAndReturn")}</p>
           {genJob.status === "failed" && failedSetup ? (
-            <p>This stop needs a setup fix on this computer, not a retry. Restart the app from the start script, and if it still stops, run the setup steps again.</p>
+            <p>{t("input.failedSetupNote")}</p>
           ) : (
-            <p>If building stops before it finishes, tap Continue. Finished days are kept, only the missing ones are built.</p>
+            <p>{t("input.ifStopsShort")}</p>
           )}
         </section>
       )}

@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { verifySession } from "../../lib/auth.mjs";
+import { verifySession, getPastor } from "../../lib/auth.mjs";
+import { t } from "../../lib/appStrings.mjs";
 import ReviewPage from "../../components/ReviewPage";
 import SignOutButton from "../../components/SignOutButton";
 
@@ -15,10 +16,13 @@ export default async function Review({ searchParams }) {
   if (!session) redirect("/signin");
   const params = await searchParams;
   const draftId = typeof params?.draft === "string" ? params.draft : undefined;
+  // Nov 21, 2026, v63 round 2: the signed-in line renders in
+  // the stored app language, like the packs page already did.
+  const appLanguage = getPastor(session.email)?.appLanguage || "en";
   return (
     <div>
       <p className="fp-main" style={{ paddingBottom: 0, paddingTop: 16 }}>
-        Signed in as {session.name}{session.role === "member" ? " (member)" : `, ${session.church}`} | <SignOutButton />
+        {t(appLanguage, "packs.signedInAs")} {session.name}{session.role === "member" ? t(appLanguage, "packs.memberSuffix") : `, ${session.church}`} | <SignOutButton />
       </p>
       <ReviewPage session={session} draftId={draftId} />
     </div>

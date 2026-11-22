@@ -23,6 +23,11 @@ export default function SignIn() {
   // model for the pastor's packs, and review flags anything
   // that leans against it. Never printed in a pack.
   const [doctrinalStatement, setDoctrinalStatement] = useState("");
+  // Nov 20, 2026, v62 (item 1): the app language, optional
+  // and skippable at signup like the tradition. A new account
+  // stores it; a returning sign-in never overwrites the
+  // stored language, which changes only on My packs.
+  const [appLanguage, setAppLanguage] = useState("en");
   const [logoFile, setLogoFile] = useState(null);
   const [error, setError] = useState("");
   const isMember = role === "member";
@@ -32,7 +37,7 @@ export default function SignIn() {
     setError("");
     const res = await fetch("/api/signin", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, church: isMember ? "" : church, email, password, denomination, role, doctrinalStatement: isMember ? "" : doctrinalStatement }),
+      body: JSON.stringify({ name, church: isMember ? "" : church, email, password, denomination, role, doctrinalStatement: isMember ? "" : doctrinalStatement, appLanguage }),
     });
     const data = await res.json();
     if (!res.ok) { setError(data.error ?? "Sign-in failed."); return; }
@@ -90,6 +95,12 @@ export default function SignIn() {
             <p style={{ marginTop: -8 }}>PNG or JPEG, under 2 MB. You can add or change it later on My packs.</p>
           </>
         )}
+        <label style={{ display: "block", marginBottom: 4, fontWeight: 600 }}>App language (optional - the language of the app itself, not of your packs)</label>
+        <p style={{ marginTop: -8 }}>
+          <label><input type="radio" name="app-language" checked={appLanguage === "en"} onChange={() => setAppLanguage("en")} /> English</label>{" "}
+          <label><input type="radio" name="app-language" checked={appLanguage === "es"} onChange={() => setAppLanguage("es")} /> Español</label>
+        </p>
+        <p style={{ marginTop: -8 }}>For a new account, this sets the app language. For a returning sign-in it changes nothing; change it later on My packs.</p>
         {error && <p style={{ color: "darkred" }}>{error}</p>}
         <button className="fp-btn-mobile-block" style={{ padding: "10px 18px", fontSize: 16 }}>Sign in</button>
         <p><a href="/forgot">Forgot your password?</a></p>

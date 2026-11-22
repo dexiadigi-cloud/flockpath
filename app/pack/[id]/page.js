@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 import lockedPackGenesis from "../../../data/locked-pack.json";
 import ShareCopy from "../../../components/ShareCopy";
 import PdfRetryButton from "../../../components/PdfRetryButton";
+import NarrationListen from "../../../components/NarrationListen";
 import { verifySession, loadLibrary } from "../../../lib/auth.mjs";
 import { matchColoring, COLORING_TEMPLATES } from "../../../lib/coloring.mjs";
 import { formatRef } from "../../../lib/refs.mjs";
@@ -124,6 +125,16 @@ export default async function SharePage({ params }) {
       {pdfHref && <p><a href={pdfHref}>Download print PDF (Letter)</a></p>}
       {!pdfHref && isOwner && <PdfRetryButton packId={lockedPack.id} />}
       <ShareCopy title={lockedPack.title} passage={lockedPack.passage} pastorName={lockedPack.pastorName} church={lockedPack.church} shareUrl={shareUrl} />
+      {/* Nov 20, 2026, v62, item 12: narration belongs to the
+          PACK. The owner (signed-in pastor) gets the same
+          Listen section here as on the review page - players,
+          downloads, and a Narrate button when there is no
+          audio yet - so the audio is reachable after approval
+          instead of dying with the draft. A family member on
+          the public share page sees none of this: the audio
+          routes are sign-in-only, and the pastor shares audio
+          with the family by download, as the section says. */}
+      {isOwner && <NarrationListen kind="pack" narrationId={lockedPack.id} packTitle={lockedPack.title} language={lockedPack.language ?? "en"} />}
       {lockedPack.adultDevotionals.map((a, i) => {
         const k = lockedPack.kidDevotionals[i];
         return (

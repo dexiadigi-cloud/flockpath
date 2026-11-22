@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { verifySession, getPastor, setDenomination, setDoctrinalStatement, setNarrationVoice } from "../../../lib/auth.mjs";
+import { verifySession, getPastor, setDenomination, setDoctrinalStatement, setNarrationVoice, setAppLanguage } from "../../../lib/auth.mjs";
 import { denominationMessage } from "../../../lib/denominations.mjs";
 
 // Nov 2, 2026, denomination setting: the signed-in pastor's own
@@ -12,6 +12,10 @@ import { denominationMessage } from "../../../lib/denominations.mjs";
 // printed in a pack, and it is sent nowhere except to the
 // writing model the pastor already chose, as part of the pack's
 // own prompts.
+// Nov 20, 2026, v62 (item 1): the same route also saves the
+// pastor's app language ("en" | "es"). The language lives only
+// in the local auth database, like the denomination; it changes
+// the app UI, never a pack, and it is never printed in a pack.
 
 export async function GET() {
   const store = await cookies();
@@ -36,10 +40,18 @@ export async function POST(request) {
     }
     if (body.narrationVoice) {
       // Nov 11, 2026, v54, Phase 4 audio narration: the
-      // pastor's picked voice, one of the four English Kokoro
-      // voices. An unknown voice is refused by the setter.
+      // pastor's picked voice, one of the ten Kokoro
+      // voices (v62 lineup, am_liam_echo default). An unknown
+      // voice is refused by the setter.
       pastor = setNarrationVoice(s.email, body.narrationVoice);
       return Response.json({ ok: true, ...pastor, message: "Saved. New narrations use this voice." });
+    }
+    if (body.appLanguage !== undefined) {
+      // Nov 20, 2026, v62 (item 1): the app language. An
+      // unknown value is refused by the setter. The app
+      // reloads to the new language on the next navigation.
+      pastor = setAppLanguage(s.email, body.appLanguage);
+      return Response.json({ ok: true, ...pastor, message: "Saved. The app now uses this language." });
     }
     if (body.doctrinalStatement !== undefined) {
       pastor = setDoctrinalStatement(s.email, body.doctrinalStatement);

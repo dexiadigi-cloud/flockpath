@@ -2,7 +2,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { verifySession, loadLibrary } from "../lib/auth.mjs";
+import { verifySession, loadLibrary, getPastor } from "../lib/auth.mjs";
+import { t, tf } from "../lib/appStrings.mjs";
 import { packSlug } from "../lib/pack.mjs";
 import { computeAnalytics } from "../lib/analytics.mjs";
 import { listDraftsFor } from "../app/api/drafts/route";
@@ -23,11 +24,11 @@ const SUGGESTED_TOPICS = [
   { topic: "Walking in Love", blurb: "Love in action, from Ephesians 5." },
 ];
 
-function greetingFor(date) {
+function greetingFor(date, appLanguage) {
   const hour = Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: "America/Los_Angeles" }).format(date));
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  return "Good evening";
+  if (hour < 12) return t(appLanguage, "home.morning");
+  if (hour < 17) return t(appLanguage, "home.afternoon");
+  return t(appLanguage, "home.evening");
 }
 
 function listJobsFor(email) {
@@ -57,7 +58,10 @@ export default async function Home() {
   const activeJobs = jobs.filter((j) => ["queued", "running"].includes(j.status));
   const stoppedJobs = jobs.filter((j) => j.status === "failed");
   const analytics = computeAnalytics(session.email);
-  const greeting = greetingFor(new Date());
+  // Nov 20, 2026, v62 (item 1): the dashboard headings render in
+  // the signed-in pastor's app language, server-side.
+  const appLanguage = getPastor(session.email)?.appLanguage || "en";
+  const greeting = greetingFor(new Date(), appLanguage);
 
   const builtTitles = packs.map((p) => `${p.title ?? ""} ${p.passage ?? ""}`.toLowerCase());
   // Nov 12, 2026, v55: a topic with a draft still awaiting
@@ -70,27 +74,27 @@ export default async function Home() {
   return (
     <main className="fp-main">
       <h1>{greeting}, {session.name}</h1>
-      <p>{isMember ? "Your personal studies, your week at a glance, and your next study." : "Your packs, your week at a glance, and your next pack."}</p>
+      <p>{isMember ? t(appLanguage, "home.introStudies") : t(appLanguage, "home.introPacks")}</p>
 
       {nothingYet && (
         <section className="fp-card">
-          <h2 style={{ marginTop: 0 }}>Start your first pack</h2>
-          <p>Three steps: paste a sermon or a verse list, check the verses, name it and build. Flockpath writes one day at a time, every verse is filled in from the Bible text by code, and nothing locks until you approve it.</p>
-          <p><a href="/input" className="fp-btn-gold" style={{ display: "inline-block", padding: "10px 18px", borderRadius: 10, color: "#fff", textDecoration: "none", fontWeight: 700 }}>Start a pack</a></p>
-          <p className="fp-muted">About a penny a family per week on OpenRouter, and free on the local model. Flockpath itself is free.</p>
+          <h2 style={{ marginTop: 0 }}>{t(appLanguage, "home.startFirst")}</h2>
+          <p>{t(appLanguage, "home.startFirstBody")}</p>
+          <p><a href="/input" className="fp-btn-gold" style={{ display: "inline-block", padding: "10px 18px", borderRadius: 10, color: "#fff", textDecoration: "none", fontWeight: 700 }}>{t(appLanguage, "home.startPack")}</a></p>
+          <p className="fp-muted">{t(appLanguage, "home.costLine")}</p>
         </section>
       )}
 
       {activeJobs.length > 0 && (
         <section>
-          <h2 className="fp-section-title">Still building</h2>
+          <h2 className="fp-section-title">{t(appLanguage, "home.stillBuilding")}</h2>
           <div className="fp-pack-grid">
             {activeJobs.map((j) => (
               <div key={j.id} className="fp-pack-card">
-                <span><span className="fp-badge fp-badge-building">Building</span></span>
-                <h3>{j.plan?.passage || "Untitled pack"}</h3>
-                <p className="fp-pack-meta">{j.progress ? `Step ${j.progress.step} of ${j.progress.total}: ${j.progress.label}` : "Waiting to start"}</p>
-                <div className="fp-pack-actions"><a href={`/input?job=${encodeURIComponent(j.id)}`}>Open the build page</a></div>
+                <span><span className="fp-badge fp-badge-building">{t(appLanguage, "home.badgeBuilding")}</span></span>
+                <h3>{j.plan?.passage || t(appLanguage, "home.untitledPack")}</h3>
+                <p className="fp-pack-meta">{j.progress ? tf(appLanguage, "home.jobStep", { step: j.progress.step, total: j.progress.total, label: j.progress.label }) : t(appLanguage, "input.jobWaiting")}</p>
+                <div className="fp-pack-actions"><a href={`/input?job=${encodeURIComponent(j.id)}`}>{t(appLanguage, "home.openBuildPage")}</a></div>
               </div>
             ))}
           </div>
@@ -99,14 +103,14 @@ export default async function Home() {
 
       {stoppedJobs.length > 0 && (
         <section>
-          <h2 className="fp-section-title">Builds that stopped</h2>
+          <h2 className="fp-section-title">{t(appLanguage, "home.stoppedBuilds")}</h2>
           <div className="fp-pack-grid">
             {stoppedJobs.slice(0, 3).map((j) => (
               <div key={j.id} className="fp-pack-card">
-                <span><span className="fp-badge fp-badge-draft">Stopped</span></span>
-                <h3>{j.plan?.passage || "Untitled pack"}</h3>
-                <p className="fp-pack-meta">Finished sections are kept. Continue picks up where it left off.</p>
-                <div className="fp-pack-actions"><a href={`/input?job=${encodeURIComponent(j.id)}`}>Continue this build</a></div>
+                <span><span className="fp-badge fp-badge-draft">{t(appLanguage, "home.badgeStopped")}</span></span>
+                <h3>{j.plan?.passage || t(appLanguage, "home.untitledPack")}</h3>
+                <p className="fp-pack-meta">{t(appLanguage, "home.stoppedNote")}</p>
+                <div className="fp-pack-actions"><a href={`/input?job=${encodeURIComponent(j.id)}`}>{t(appLanguage, "home.continueBuild")}</a></div>
               </div>
             ))}
           </div>
@@ -115,15 +119,15 @@ export default async function Home() {
 
       {drafts.length > 0 && (
         <section>
-          <h2 className="fp-section-title">Ready for your review</h2>
+          <h2 className="fp-section-title">{t(appLanguage, "home.readyReview")}</h2>
           <div className="fp-pack-grid">
             {drafts.map((d) => (
               <div key={d.id} className="fp-pack-card">
-                <span><span className="fp-badge fp-badge-draft">Draft</span></span>
+                <span><span className="fp-badge fp-badge-draft">{t(appLanguage, "packs.badgeDraft")}</span></span>
                 <h3>{d.title}</h3>
-                <p className="fp-pack-meta">{d.passage} - draft, not published</p>
-                {d.memberSubmitted && <p className="fp-pack-meta">Sent by {d.submittedBy} for your review.</p>}
-                <div className="fp-pack-actions"><a href={`/review?draft=${d.id}`}>{isMember ? "Review this draft" : "Review and approve this draft"}</a></div>
+                <p className="fp-pack-meta">{tf(appLanguage, "packs.draftMeta", { passage: d.passage })}</p>
+                {d.memberSubmitted && <p className="fp-pack-meta">{tf(appLanguage, "review.sentBy", { name: d.submittedBy })}</p>}
+                <div className="fp-pack-actions"><a href={`/review?draft=${d.id}`}>{isMember ? t(appLanguage, "input.reviewStudy") : t(appLanguage, "input.reviewDraft")}</a></div>
               </div>
             ))}
           </div>
@@ -132,16 +136,16 @@ export default async function Home() {
 
       {!isMember && lockedPacks.length > 0 && (
         <section>
-          <h2 className="fp-section-title">Your locked packs</h2>
+          <h2 className="fp-section-title">{t(appLanguage, "home.lockedPacks")}</h2>
           <div className="fp-pack-grid">
             {lockedPacks.slice(0, 3).map((p) => (
               <div key={`${p.id}-${p.savedAt}`} className="fp-pack-card">
-                <span><span className="fp-badge fp-badge-locked">Locked</span></span>
+                <span><span className="fp-badge fp-badge-locked">{t(appLanguage, "packs.badgeLocked")}</span></span>
                 <h3>{p.title}</h3>
                 <p className="fp-pack-meta">{p.passage}</p>
                 <div className="fp-pack-actions">
-                  <a href={`/pack/${packSlug(p.pack ?? p, p.id)}`}>Open share page</a>
-                  <a href="/packs">All packs</a>
+                  <a href={`/pack/${packSlug(p.pack ?? p, p.id)}`}>{t(appLanguage, "packs.openShare")}</a>
+                  <a href="/packs">{t(appLanguage, "home.allPacks")}</a>
                 </div>
               </div>
             ))}
@@ -151,14 +155,14 @@ export default async function Home() {
 
       {isMember && personalPacks.length > 0 && (
         <section>
-          <h2 className="fp-section-title">Your personal studies</h2>
+          <h2 className="fp-section-title">{t(appLanguage, "home.personalStudies")}</h2>
           <div className="fp-pack-grid">
             {personalPacks.slice(0, 3).map((p) => (
               <div key={`${p.id}-${p.savedAt}`} className="fp-pack-card">
-                <span><span className="fp-badge fp-badge-personal">Personal study, not pastor-approved</span></span>
+                <span><span className="fp-badge fp-badge-personal">{t(appLanguage, "packs.badgePersonal")}</span></span>
                 <h3>{p.title}</h3>
                 <p className="fp-pack-meta">{p.passage}</p>
-                <div className="fp-pack-actions"><a href="/packs">All studies</a></div>
+                <div className="fp-pack-actions"><a href="/packs">{t(appLanguage, "home.allStudies")}</a></div>
               </div>
             ))}
           </div>
@@ -167,15 +171,15 @@ export default async function Home() {
 
       {suggested.length > 0 && (
         <section>
-          <h2 className="fp-section-title">Suggested next {isMember ? "studies" : "packs"}</h2>
-          <p className="fp-muted">Suggestions only. Any pack can start at any time, and nothing is locked behind another pack.</p>
+          <h2 className="fp-section-title">{isMember ? t(appLanguage, "home.suggestedStudies") : t(appLanguage, "home.suggestedPacks")}</h2>
+          <p className="fp-muted">{t(appLanguage, "home.suggestionsNote")}</p>
           <div className="fp-pack-grid">
             {suggested.map((s) => (
               <div key={s.topic} className="fp-pack-card">
-                <span><span className="fp-badge fp-badge-suggested">Suggested</span></span>
+                <span><span className="fp-badge fp-badge-suggested">{t(appLanguage, "home.badgeSuggested")}</span></span>
                 <h3>{s.topic}</h3>
                 <p className="fp-pack-meta">{s.blurb}</p>
-                <div className="fp-pack-actions"><a href={`/input?topic=${encodeURIComponent(s.topic)}`}>Start this {isMember ? "study" : "pack"}</a></div>
+                <div className="fp-pack-actions"><a href={`/input?topic=${encodeURIComponent(s.topic)}`}>{isMember ? t(appLanguage, "home.startThisStudy") : t(appLanguage, "home.startThisPack")}</a></div>
               </div>
             ))}
           </div>
@@ -183,14 +187,14 @@ export default async function Home() {
       )}
 
       <section>
-        <h2 className="fp-section-title">Your week at a glance</h2>
+        <h2 className="fp-section-title">{t(appLanguage, "home.weekGlance")}</h2>
         <div className="fp-stat-row">
-          <div className="fp-stat"><div className="fp-stat-num">{analytics.packsBuilt}</div><div className="fp-stat-label">Packs built</div></div>
-          <div className="fp-stat"><div className="fp-stat-num">{analytics.packsLocked}</div><div className="fp-stat-label">Packs locked</div></div>
-          {isMember && <div className="fp-stat"><div className="fp-stat-num">{analytics.personalStudies}</div><div className="fp-stat-label">Personal studies</div></div>}
-          <div className="fp-stat"><div className="fp-stat-num">{analytics.totalDays}</div><div className="fp-stat-label">Days built</div></div>
+          <div className="fp-stat"><div className="fp-stat-num">{analytics.packsBuilt}</div><div className="fp-stat-label">{t(appLanguage, "packs.statBuilt")}</div></div>
+          <div className="fp-stat"><div className="fp-stat-num">{analytics.packsLocked}</div><div className="fp-stat-label">{t(appLanguage, "packs.statLocked")}</div></div>
+          {isMember && <div className="fp-stat"><div className="fp-stat-num">{analytics.personalStudies}</div><div className="fp-stat-label">{t(appLanguage, "packs.statPersonal")}</div></div>}
+          <div className="fp-stat"><div className="fp-stat-num">{analytics.totalDays}</div><div className="fp-stat-label">{t(appLanguage, "packs.statDays")}</div></div>
         </div>
-        <p><a href="/packs">See the full picture on My packs</a></p>
+        <p><a href="/packs">{t(appLanguage, "home.seeFullPicture")}</a></p>
       </section>
     </main>
   );

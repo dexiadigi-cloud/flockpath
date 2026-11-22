@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { DENOMINATIONS, denominationMessage } from "../lib/denominations.mjs";
+import { useAppLanguage } from "./AppLanguage";
 
 // Nov 2, 2026, denomination setting, changeable here on the
 // My packs page. The setting is a preset, not a wall: it orders
@@ -11,6 +12,7 @@ import { DENOMINATIONS, denominationMessage } from "../lib/denominations.mjs";
 // computer, never sent anywhere, never printed in a pack.
 
 export default function TraditionSettings() {
+  const { language: appLanguage, t } = useAppLanguage();
   const [current, setCurrent] = useState("");
   const [choice, setChoice] = useState("non-denominational");
   const [saved, setSaved] = useState("");
@@ -37,25 +39,25 @@ export default function TraditionSettings() {
       body: JSON.stringify({ denomination: choice }),
     });
     const data = await res.json();
-    if (!res.ok) { setError(data.error ?? "Could not save."); return; }
+    if (!res.ok) { setError(data.error ?? t("settings.couldNotSave")); return; }
     setCurrent(data.denomination);
     setSaved(data.message);
   }
 
   return (
     <section className="fp-card">
-      <h2 style={{ marginTop: 0 }}>My tradition (optional)</h2>
-      <p>Your packs will put your tradition&apos;s voices first. Everything else stays available and labeled in review. Change it any time; it affects future packs, never packs already locked.</p>
+      <h2 style={{ marginTop: 0 }}>{t("tradition.heading")}</h2>
+      <p>{t("tradition.intro")}</p>
       <form onSubmit={save}>
         <select value={choice} onChange={(e) => setChoice(e.target.value)} style={{ padding: 8, fontSize: 15, marginBottom: 12 }}>
           {DENOMINATIONS.map((d) => (
-            <option key={d.key} value={d.key}>{d.label}</option>
+            <option key={d.key} value={d.key}>{t(`tradition.denom.${d.key}`)}</option>
           ))}
         </select>
-        <p>{denominationMessage(choice)}</p>
+        <p>{denominationMessage(choice, appLanguage)}</p>
         {error && <p style={{ color: "darkred" }}>{error}</p>}
-        {saved && <p><strong>Saved.</strong> {saved}</p>}
-        <button style={{ padding: "10px 18px", fontSize: 15 }} disabled={choice === current && Boolean(saved)}>Save tradition</button>
+        {saved && <p><strong>{t("settings.saved")}</strong> {saved}</p>}
+        <button style={{ padding: "10px 18px", fontSize: 15 }} disabled={choice === current && Boolean(saved)}>{t("tradition.save")}</button>
       </form>
     </section>
   );

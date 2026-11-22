@@ -282,6 +282,86 @@ def clean_excerpt(text, max_chars):
     return window.rstrip() + "\u2026"
 
 
+def _bsb_verse_text(code, ch, v, cache):
+    """BSB text of one verse, for the names-occurrence check below.
+
+    Loads data/bsb-<code>.json per book, cached. A missing file,
+    bad JSON, or missing verse returns "", which fails the check,
+    so an unverifiable link is dropped, never cited.
+    """
+    if code not in cache:
+        try:
+            cache[code] = json.loads(
+                (FLOCKPATH / BOOKS[code][5]).read_text(encoding="utf-8"))
+        except (OSError, ValueError, KeyError):
+            cache[code] = {}
+    return cache[code].get(f"{code} {ch}:{v}", "")
+
+
+# Nov 20, 2026, v62 (item 6): the divine-name stoplist, used
+# by _name_occurs_in_verse below. Lowercased for comparison;
+# "GOD" and "Lord" match through it too.
+DIVINE_NAME_STOPLIST = {"god", "lord"}
+
+
+def _name_occurs_in_verse(name, name_forms_json, verse_text):
+    """True when the proper name itself occurs in the verse text.
+
+    Nov 20, 2026, v61 fix (item 15): TIPNR links a name to a
+    verse by Strong's number, so a verse that only mentions the
+    related common noun links too -- Judah via G2453 "Jews",
+    Javan via G1672/G1674 "Greek/Greeks" -- and the names note
+    used to print that link as "(named in Romans 3:9)", a false
+    citation. A form counts only as a whole word in the verse's
+    BSB text: "Jew" does not match "Jews", "Greek" does not
+    match "Greeks". Forms come from the bundle's name_forms
+    (comma-split, bracket junk dropped), plus the canonical
+    name itself. A form with no capital letter is skipped:
+    TIPNR's list mixes name spellings ("Juda", "of Judah")
+    with lowercase gloss words ("he", "go", "accuser",
+    "a troop"), and a printed proper name is capitalized,
+    so a lowercase form cannot be the name itself -- it can
+    only false-positive (Peter via "he", Hamath via "go").
+    The canonical name is always kept, so no true occurrence
+    is lost. A name with no such verse in the passage is
+    dropped at fill time, never cited falsely.
+
+    Nov 20, 2026, v62 fix (item 6): the divine-name stoplist.
+    TIPNR's LORD entry (H3068) carries "God", "LORD", and
+    "Lord" as forms, so Genesis 1:1 ("In the beginning God
+    created...") cited LORD as "(named in Genesis 1:1)", and
+    Israel's forms carry "God" too, so any verse saying "God"
+    could cite Israel. The rule is: the divine name is never
+    cited as a proper name in a names note -- these forms are
+    struck from the occurrence check, so a name counts only
+    when one of its other forms occurs. It is NOT "never cite
+    Genesis 1:1": a real name that genuinely occurs there
+    still cites it. LORD itself can then never cite anywhere,
+    which is the point: the divine name is not a proper name
+    for the note. The same strike keeps Jesus from citing a
+    verse that only says "Lord".
+    """
+    forms = {str(name or "").strip()}
+    try:
+        raw_forms = json.loads(name_forms_json or "[]")
+    except ValueError:
+        raw_forms = []
+    for f in raw_forms:
+        for part in str(f).split(","):
+            part = part.strip().strip("[]").strip()
+            if part and any(c.isupper() for c in part):
+                forms.add(part)
+    forms.discard("")
+    # v62 divine-name stoplist (item 6): "God" and "LORD"/"Lord"
+    # never count as an occurrence, canonical name included.
+    forms = {f for f in forms if f.strip().lower() not in DIVINE_NAME_STOPLIST}
+    text = verse_text or ""
+    for form in forms:
+        if re.search(r"\b" + re.escape(form) + r"\b", text, re.IGNORECASE):
+            return True
+    return False
+
+
 def main():
     args = sys.argv[1:]
     tradition = None
@@ -289,8 +369,53 @@ def main():
         i = args.index("--tradition")
         tradition = args[i + 1] if i + 1 < len(args) else None
         del args[i:i + 2]
+    # Nov 19, 2026, Viz.Bible Phase 1: places are opt-in only.
+    # Without --places the bundle is byte-identical to before, so
+    # v23 generation defaults are untouched. With it, the bundle
+    # gains a "places" field (see below) built from the Phos
+    # places / place_verses tables (OpenBible.info, CC BY 4.0).
+    include_places = False
+    if "--places" in args:
+        include_places = True
+        del args[args.index("--places")]
+    # Nov 19, 2026, Viz.Bible Phase 2: names are opt-in only.
+    # Without --names the bundle is byte-identical to before, so
+    # v23 generation defaults are untouched. With it, the bundle
+    # gains a "names" field (see below) built from the Phos
+    # proper_names / proper_name_verses tables (STEPBible TIPNR,
+    # CC BY 4.0), with the Hitchcock meaning (public domain)
+    # looked up per name.
+    include_names = False
+    if "--names" in args:
+        include_names = True
+        del args[args.index("--names")]
+    # Nov 19, 2026, Viz.Bible Phase 3: topics are opt-in only, and
+    # take a topic value: --topics <topic>. Without it the bundle is
+    # byte-identical to before. With it, the bundle gains a "topics"
+    # field (see below) built from the Phos topics_openbible table
+    # (OpenBible.info Topical Bible, CC BY 4.0, curated 77 topics).
+    include_topics = None
+    if "--topics" in args:
+        i = args.index("--topics")
+        include_topics = args[i + 1] if i + 1 < len(args) else None
+        del args[i:i + 2]
+    # Nov 19, 2026, v60 fixes: the topics fill reads its verse
+    # text from a verse store, and the store must be the pack's
+    # own translation, not always BSB. A Spanish pack's topics
+    # note printed English BSB verses because the fill had no
+    # translation option. Default bsb keeps every existing
+    # caller byte-identical. Only the topics fill uses this;
+    # the main bundle verses stay BSB, as before.
+    topics_translation = "bsb"
+    if "--translation" in args:
+        i = args.index("--translation")
+        topics_translation = args[i + 1] if i + 1 < len(args) else "bsb"
+        del args[i:i + 2]
+    if topics_translation not in ("bsb", "rv1909", "spabes"):
+        print(f"Unknown translation: {topics_translation}", file=sys.stderr)
+        return 2
     if len(args) != 2:
-        print("usage: phos_context.py <refs_csv> <out.json> [--tradition <key>]", file=sys.stderr)
+        print("usage: phos_context.py <refs_csv> <out.json> [--tradition <key>] [--places] [--names] [--topics <topic>] [--translation <code>]", file=sys.stderr)
         return 2
     refs = args[0].split(",")
     out_path = Path(args[1])
@@ -423,6 +548,214 @@ def main():
     dev_all, dev_dropped = filter_opt_in(dev_all, tradition)
     opt_in_dropped += dev_dropped
     bundle["devotionals"] = preferred_first(dev_all, preferred, "source")[:5]
+    # Nov 19, 2026, Viz.Bible Phase 1, --places only: places
+    # named in the passage's own verses, from place_verses.
+    # Cap 2 places per day, 3 per pack, high confidence first.
+    # A place is listed once per pack even when several verses
+    # name it. Low-confidence places are listed with confidence
+    # "low" and no coordinates, never a guessed point. The
+    # bundle carries the raw rows; the leader-page note and
+    # the sources line are built from this field downstream.
+    if include_places:
+        places_out, seen_places = [], set()
+        # Guarded: an older database without the places tables
+        # still builds a bundle, with an empty places list, instead
+        # of failing the whole generation.
+        has_places = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='places'"
+        ).fetchone()[0]
+        if has_places:
+            for ref in refs:
+                if len(places_out) >= 3:
+                    break
+                code, ch, v = parse_ref(ref)
+                book_name = BOOKS[code][0]
+                rows = con.execute(
+                    "SELECT p.place_id, p.name, p.modern_name, "
+                    "p.latitude, p.longitude, p.confidence, p.score, "
+                    "p.place_type FROM places p "
+                    "JOIN place_verses pv ON pv.place_id = p.place_id "
+                    "WHERE pv.book=? AND pv.chapter=? AND pv.verse=? "
+                    "ORDER BY CASE p.confidence WHEN 'high' THEN 0 "
+                    "WHEN 'medium' THEN 1 ELSE 2 END, p.name",
+                    (book_name, ch, v)).fetchall()
+                day_count = 0
+                for r in rows:
+                    if len(places_out) >= 3 or day_count >= 2:
+                        break
+                    if r["place_id"] in seen_places:
+                        continue
+                    seen_places.add(r["place_id"])
+                    day_count += 1
+                    places_out.append({
+                        "place_id": r["place_id"],
+                        "name": r["name"],
+                        "modern_name": r["modern_name"],
+                        "latitude": r["latitude"],
+                        "longitude": r["longitude"],
+                        "confidence": r["confidence"],
+                        "score": r["score"],
+                        "place_type": r["place_type"],
+                        "verse": ref,
+                    })
+        bundle["places"] = places_out
+        bundle["places_source"] = (
+            "Place data courtesy of OpenBible.info, "
+            "licensed under CC BY 4.0.")
+    # Nov 19, 2026, Viz.Bible Phase 2, --names only: proper
+    # names in the passage's own verses, from proper_name_verses.
+    # Cap 2 names per day, 3 per pack. A name is listed once per
+    # pack even when several verses name it. The meaning comes
+    # from Hitchcock's Bible Names Dictionary (public domain,
+    # already in Phos) first; TIPNR is the cross-check and the
+    # verse list, via family_links. No AI description text is
+    # carried: TIPNR's brief / short / article descriptions were
+    # never ingested. The bundle carries the raw rows; the
+    # leader-page note and the sources line are built from this
+    # field downstream.
+    # Nov 20, 2026, v61 fix (item 15): a TIPNR link alone is
+    # not proof the name occurs in the verse (see
+    # _name_occurs_in_verse). The fill keeps only links whose
+    # verse text actually contains the name as a whole word;
+    # a name with no such verse in this passage is dropped.
+    if include_names:
+        names_out, seen_names = [], set()
+        bsb_store_cache = {}
+        # Guarded: an older database without the proper_names tables
+        # still builds a bundle, with an empty names list, instead
+        # of failing the whole generation.
+        has_names = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='proper_names'"
+        ).fetchone()[0]
+        if has_names:
+            for ref in refs:
+                if len(names_out) >= 3:
+                    break
+                code, ch, v = parse_ref(ref)
+                book_name = BOOKS[code][0]
+                rows = con.execute(
+                    "SELECT pn.name_id, pn.name, pn.kind, "
+                    "pn.strong_numbers, pn.name_forms, pn.family_links "
+                    "FROM proper_names pn "
+                    "JOIN proper_name_verses pv "
+                    "ON pv.name_id = pn.name_id "
+                    "WHERE pv.book=? AND pv.chapter=? AND pv.verse=? "
+                    "ORDER BY CASE pn.kind WHEN 'person' THEN 0 "
+                    "WHEN 'place' THEN 1 ELSE 2 END, pn.name",
+                    (book_name, ch, v)).fetchall()
+                day_count = 0
+                for r in rows:
+                    if len(names_out) >= 3 or day_count >= 2:
+                        break
+                    if r["name_id"] in seen_names:
+                        continue
+                    # Nov 20, 2026, v61 fix (item 15): the link
+                    # is by Strong's number, so a verse that
+                    # only has the related common noun ("Jews",
+                    # "Greeks") links too. Keep the link only
+                    # when the verse's own BSB text contains the
+                    # proper name itself. Not marked seen on a
+                    # miss, so the same name can still count at
+                    # another passage verse where it does occur.
+                    verse_text = _bsb_verse_text(code, ch, v, bsb_store_cache)
+                    if not _name_occurs_in_verse(
+                            r["name"], r["name_forms"], verse_text):
+                        continue
+                    seen_names.add(r["name_id"])
+                    day_count += 1
+                    meaning_row = con.execute(
+                        "SELECT text FROM dictionaries "
+                        "WHERE source_id='hitchcock' "
+                        "AND lower(term)=lower(?) LIMIT 1",
+                        (r["name"],)).fetchone()
+                    try:
+                        family = json.loads(r["family_links"] or "{}")
+                    except ValueError:
+                        family = {}
+                    names_out.append({
+                        "name_id": r["name_id"],
+                        "name": r["name"],
+                        "kind": r["kind"],
+                        "strong_numbers": json.loads(
+                            r["strong_numbers"] or "[]"),
+                        "family_links": family,
+                        "meaning": (meaning_row["text"]
+                                    if meaning_row else None),
+                        "verse": f"{book_name} {ch}:{v}",
+                    })
+        bundle["names"] = names_out
+        bundle["names_source"] = (
+            "Proper names: STEP Bible (www.STEPBible.org), CC BY 4.0.")
+    # Nov 19, 2026, Viz.Bible Phase 3, --topics <topic> only:
+    # supporting verses for one pastor-picked topic, from
+    # topics_openbible, best-voted first (vote_rank 1, 2, 3...).
+    # TOPIC PACKS ONLY, never sermon packs: the flag itself is the
+    # opt-in, and the adult devotional still starts from the week's
+    # passage, never from this list. Cap 3 per pack: a topic is
+    # pack-level, not day-anchored, so only the 3-per-pack half of
+    # the places/names cap pattern applies. A verse is listed once,
+    # with its text from the pack's translation store (BSB for an
+    # English pack, rv1909 / spabes for a Spanish pack, via
+    # --translation; never ESV text from OpenBible). A row whose
+    # text cannot be resolved (e.g. the one cross-chapter range, 2 Peter 2:19-3:12, which
+    # the store resolver does not span) is skipped and the next
+    # ranked row is taken instead, so the note always carries 3
+    # quotable verses when the topic has them. If the topic does
+    # not match one of the 77 curated topics, the field stays empty.
+    if include_topics:
+        topics_out = []
+        # Guarded: an older database without the topics table still
+        # builds a bundle, with an empty topics list, instead of
+        # failing the whole generation.
+        has_topics = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='topics_openbible'"
+        ).fetchone()[0]
+        if has_topics and include_topics.strip():
+            code_by_book = {v[0]: k for k, v in BOOKS.items()}
+            store_cache = {}
+            rows = con.execute(
+                "SELECT verse_ref, book, chapter, verse, end_chapter, "
+                "end_verse FROM topics_openbible "
+                "WHERE lower(topic)=lower(?) ORDER BY vote_rank",
+                (include_topics.strip(),)).fetchall()
+            for r in rows:
+                if len(topics_out) >= 3:
+                    break
+                code = code_by_book.get(r["book"])
+                if not code:
+                    continue
+                if code not in store_cache:
+                    # Nov 19, 2026, v60 fixes: the topics verse
+                    # text comes from the pack's translation store
+                    # (rv1909 / spabes for a Spanish pack), never
+                    # hard-coded to BSB. A missing store file for
+                    # a book skips that verse instead of failing
+                    # the whole bundle; the next ranked row is
+                    # taken instead, the same as an unresolvable
+                    # reference.
+                    store_file = FLOCKPATH / f"data/{topics_translation}-{code}.json"
+                    if not store_file.exists():
+                        continue
+                    store_cache[code] = json.loads(
+                        store_file.read_text(encoding="utf-8"))
+                ref = f"{code} {r['chapter']}:{r['verse']}"
+                if r["end_chapter"] is not None:
+                    if r["end_chapter"] == r["chapter"]:
+                        ref += f"-{r['end_verse']}"
+                    else:
+                        ref += f"-{r['end_chapter']}:{r['end_verse']}"
+                text = resolve_verse_text(ref, store_cache[code])
+                if not text:
+                    continue
+                topics_out.append({
+                    "topic": include_topics.strip(),
+                    "verse_ref": r["verse_ref"],
+                    "text": text,
+                })
+        bundle["topics"] = topics_out
+        bundle["topics_topic"] = include_topics.strip() if include_topics else ""
+        bundle["topics_source"] = (
+            "Topical data: OpenBible.info (CC BY 4.0).")
     out_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=1), encoding="utf-8")
     for verse in bundle["verses"]:
         print(f"{verse['reference']}: {len(verse['crossrefs'])} crossrefs, {len(verse['commentary'])} commentary, {len(verse['lexicon'])} lexicon")
@@ -434,6 +767,21 @@ def main():
     print(f"Devotionals anchored: {len(bundle['devotionals'])}")
     for d in bundle["devotionals"]:
         print(f"  {d['source']}: {d['title']} ({d['anchor_ref']})")
+    if include_places:
+        print(f"Places in passage: {len(bundle.get('places', []))}")
+        for p in bundle.get("places", []):
+            print(f"  {p['name']} (modern: {p['modern_name'] or 'uncertain'}, "
+                  f"confidence: {p['confidence']}, verse: {p['verse']})")
+    if include_names:
+        print(f"Names in passage: {len(bundle.get('names', []))}")
+        for n in bundle.get("names", []):
+            print(f"  {n['name']} ({n['kind']}, "
+                  f"meaning: {n['meaning'] or 'none'}, verse: {n['verse']})")
+    if include_topics:
+        print(f"Topic verses for '{include_topics}': "
+              f"{len(bundle.get('topics', []))}")
+        for t in bundle.get("topics", []):
+            print(f"  {t['verse_ref']}: {t['text'][:100]}...")
     # Nov 16, 2026, v57 hard filter: opt-in voices excluded for
     # this tradition (0 is normal for a Catholic pastor and for
     # passages no opt-in voice anchors to).

@@ -8,8 +8,12 @@
 #         or output/mac-packages/flockpath-update-<version>.zip
 # The zip root is flockpath-mac-test/, holding flockpath/ (the
 # app), hymn-desk/ (matcher + hymns), and the updater and log
-# bundler. It never carries models, accounts, libraries,
-# drafts, jobs, node_modules, .next, or test artifacts.
+# bundler. It never carries accounts, libraries, drafts, jobs,
+# node_modules, .next, or test artifacts. It carries exactly
+# one models folder, the shipped Kokoro narration bundle
+# models/tts-kokoro (Nov 21, 2026, v62, about 345 MB, fp32), so a
+# Mac that never narrated before does not need the Hugging
+# Face download; no other models are shipped.
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-}"
@@ -31,13 +35,23 @@ fi
 [ -f "$REPO/../hymn-desk/data/hymns.json" ] || { echo "hymn-desk data/hymns.json not found." >&2; exit 1; }
 [ -f "$REPO/../hymn-desk/data/hymns-es.json" ] || { echo "hymn-desk data/hymns-es.json not found." >&2; exit 1; }
 [ -f "$REPO/../hymn-desk/scripts/match_hymn.py" ] || { echo "hymn-desk scripts/match_hymn.py not found." >&2; exit 1; }
+# Nov 21, 2026, v62: the Kokoro narration bundle ships in the
+# package. All five pinned files must be present in the repo.
+for f in model.onnx voices.bin tokens.txt lexicon-us-en.txt LICENSE; do
+  [ -f "$REPO/models/tts-kokoro/$f" ] || { echo "Kokoro narration bundle file missing: models/tts-kokoro/$f." >&2; exit 1; }
+done
 
 rm -rf "$STAGE"
 mkdir -p "$APP/data" "$ROOT/hymn-desk/scripts" "$ROOT/hymn-desk/data"
-# App tree, minus everything that is not shipped.
+# App tree, minus everything that is not shipped. models/
+# is included only as the Kokoro narration bundle: the parent
+# dir and the tts-kokoro dir are included first, then every
+# file under tts-kokoro, then everything else under models/
+# is excluded, so the Qwen .gguf files in the repo never ship.
 rsync -a \
   --exclude '/node_modules/' --exclude '/.next/' --exclude '/.venv/' \
-  --exclude '/models/' --exclude '/output/' --exclude '/data/' \
+  --include '/models/' --include '/models/tts-kokoro/' --include '/models/tts-kokoro/***' --exclude '/models/*' \
+  --exclude '/output/' --exclude '/data/' \
   --exclude '/demo-video/' --exclude '__pycache__/' \
   --exclude '/mac-package/' --exclude '/tools/typst-x86_64-unknown-linux-musl/' \
   --exclude '/tools/typst.tar.xz' --exclude '/*.log' \
@@ -98,8 +112,21 @@ SPABES_COUNT="$(echo "$CHECK" | grep "flockpath-mac-test/flockpath/data/spabes-.
 echo "$CHECK" | grep -q "flockpath-mac-test/hymn-desk/data/hymns-es.json" || { echo "Zip missing Spanish hymn index hymns-es.json." >&2; exit 1; }
 echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/data/locked-pack.json" || { echo "Zip missing demo locked-pack.json." >&2; exit 1; }
 echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/data/generated-pack-draft-v2.json" || { echo "Zip missing demo draft." >&2; exit 1; }
-for bad in "models/" "auth.db" "packs-library.json" "node_modules/" ".next/" "pack-job-" "pack-john3"; do
+for bad in "auth.db" "packs-library.json" "node_modules/" ".next/" "pack-job-" "pack-john3"; do
   echo "$CHECK" | grep -q "$bad" && { echo "Zip wrongly contains $bad." >&2; exit 1; }
+done
+# models/ is allowed only as the shipped narration bundle:
+# every models/ path in the zip must sit under tts-kokoro,
+# and all five bundle files must be present.
+# Nov 20, 2026, v61 ship: the first grep needs one character
+# after "models/" (models/.) so the bare parent-dir entry
+# "flockpath-mac-test/flockpath/models/" itself does not trip
+# the check - it is a directory entry, not a shipped file.
+if echo "$CHECK" | grep "flockpath-mac-test/flockpath/models/." | grep -v "models/tts-kokoro/" | grep -q .; then
+  echo "Zip wrongly contains models outside tts-kokoro." >&2; exit 1
+fi
+for f in model.onnx voices.bin tokens.txt lexicon-us-en.txt LICENSE; do
+  echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/models/tts-kokoro/$f" || { echo "Zip missing narration bundle file models/tts-kokoro/$f." >&2; exit 1; }
 done
 if [ "$KIND" = "install" ]; then
   echo "$CHECK" | grep -q "flockpath-mac-test/flockpath/data/phos.db" || { echo "Install zip missing data/phos.db." >&2; exit 1; }

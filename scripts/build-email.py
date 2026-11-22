@@ -40,6 +40,26 @@ def esc(s):
     return html.escape(str(s or ""))
 
 
+# Nov 18, 2026: the hymn meter VALUE comes from Hymn Desk data
+# and carries English wording ("Not stated on source pages",
+# "with refrain", "with alleluia"). Mirror of formatMeter() in
+# lib/translation.mjs; the numeric part stays untouched. Only
+# the meter line is localized here - the rest of the email is
+# English-only by design, out of scope for this fix.
+_METER_ES_WORDS = [
+    ("Not stated on source pages", "No indicado en las fuentes"),
+    ("with refrain", "con estribillo"),
+    ("with alleluia", "con aleluya"),
+]
+
+
+def format_meter_es(meter):
+    out = str(meter or "")
+    for en, es in _METER_ES_WORDS:
+        out = out.replace(en, es)
+    return out
+
+
 def paras(s, size=17):
     return "".join(
         f'<p style="margin:0 0 12px 0;font-size:{size}px;line-height:1.6;">{esc(p)}</p>'
@@ -133,13 +153,16 @@ def build(d, test_note=False, pastor_message=""):
     )
     if d.get("hymn"):
         h = d["hymn"]
+        is_es = (d.get("language") or "en") == "es"
+        meter_label = "Metro" if is_es else "Meter"
+        meter_value = format_meter_es(h["meter"]) if is_es else h["meter"]
         parts.append(
             f'<h2 style="font-size:22px;margin:0 0 10px 0;">Hymn: {esc(h["title"])}</h2>'
         )
         parts.append(
             f'<p style="margin:0 0 10px 0;"><em>Tune: {esc(h["tune"])}, '
             f'{esc(h["tuneComposer"])}. Words: {esc(h["author"])} '
-            f'({esc(h["authorYears"])}), {h["wordsYear"]}. Meter: {esc(h["meter"])}.</em></p>'
+            f'({esc(h["authorYears"])}), {h["wordsYear"]}. {meter_label}: {esc(meter_value)}.</em></p>'
         )
         parts.append("<p style=\"margin:0 0 10px 0;\">Public domain.</p>")
         parts.append(paras(h["lyrics"]))

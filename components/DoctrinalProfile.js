@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAppLanguage } from "./AppLanguage";
+import { tf } from "../lib/appStrings.mjs";
 
 // Nov 11, 2026, v54, Phase 4 doctrinal profile: the pastor's
 // own short statement of faith, changeable here on the My
@@ -16,6 +18,7 @@ import { useEffect, useState } from "react";
 // personal studies with the default guidance.
 
 export default function DoctrinalProfile() {
+  const { language: appLanguage, t } = useAppLanguage();
   const [current, setCurrent] = useState("");
   const [statement, setStatement] = useState("");
   const [saved, setSaved] = useState("");
@@ -42,22 +45,22 @@ export default function DoctrinalProfile() {
       body: JSON.stringify({ doctrinalStatement: statement }),
     });
     const data = await res.json();
-    if (!res.ok) { setError(data.error ?? "Could not save."); return; }
+    if (!res.ok) { setError(data.error ?? t("settings.couldNotSave")); return; }
     setCurrent(data.doctrinalStatement ?? "");
     setSaved(data.message);
   }
 
   return (
     <section className="fp-card">
-      <h2 style={{ marginTop: 0 }}>My doctrinal profile (optional)</h2>
-      <p>A short statement of faith in your own words. It steers the writing model for your future packs, and review flags anything that leans against it. Leave it empty and the default guidance alone shapes your packs, exactly as before.</p>
-      <p>It never appears in a pack or PDF, and it is never sent anywhere except to the writing model you already chose, as part of your pack&apos;s own prompts.</p>
+      <h2 style={{ marginTop: 0 }}>{t("doctrinal.heading")}</h2>
+      <p>{t("doctrinal.intro1")}</p>
+      <p>{t("doctrinal.intro2")}</p>
       <form onSubmit={save}>
         <textarea value={statement} maxLength={2000} onChange={(e) => setStatement(e.target.value)} placeholder="e.g. We hold to the Baptist Faith and Message: Scripture alone is our authority, salvation is by grace alone through faith alone in Christ alone." style={{ display: "block", width: "100%", minHeight: 80, padding: 8, fontSize: 15, marginBottom: 12 }} />
-        <p>{statement.length}/2000 characters.</p>
+        <p>{tf(appLanguage, "doctrinal.chars", { n: statement.length })}</p>
         {error && <p style={{ color: "darkred" }}>{error}</p>}
-        {saved && <p><strong>Saved.</strong> {saved}</p>}
-        <button style={{ padding: "10px 18px", fontSize: 15 }} disabled={statement === current && Boolean(saved)}>Save doctrinal profile</button>
+        {saved && <p><strong>{t("settings.saved")}</strong> {saved}</p>}
+        <button style={{ padding: "10px 18px", fontSize: 15 }} disabled={statement === current && Boolean(saved)}>{t("doctrinal.save")}</button>
       </form>
     </section>
   );

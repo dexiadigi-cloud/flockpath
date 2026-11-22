@@ -1,112 +1,124 @@
 import { cookies } from "next/headers";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { verifySession, getPastor } from "../../../lib/auth.mjs";
+import { isNarrationId, narrationDir, narrationStatus, parseSection, plainNarrationError, resolveNarrationSource } from "../../../lib/narration.mjs";
 
 // Nov 11, 2026, v54, Phase 4 audio narration: on-demand
 // narration of a draft from the review page. The draft's own
 // pastor must be signed in; the audio is written under
-// data/narration/<draftId>/, behind sign-in, and never under
+// data/narration/<id>/, behind sign-in, and never under
 // public/. The synthesis runs locally with the Kokoro model
 // (sherpa-onnx-node, Apache-2.0); no API key, no network at
-// narration time once the model files are on disk. A full
-// 5-day pack takes a few minutes on a laptop CPU, so the
-// review page says so and waits. Spanish drafts are refused
-// here, before the script runs, with the plain reason: the
-// voice model has no Spanish pronunciation guide.
+// narration time once the model files are on disk.
+// Nov 20, 2026, v62, items 12, 13, 16: narration belongs to
+// the PACK, not the review step, so this route now serves a
+// draft id or a locked pack id alike (same id space: a pack's
+// id is its draft's job id). The POST starts a detached
+// background job and returns a job id immediately - no more
+// 20-minute blocking request. The GET is the status endpoint
+// the UI polls: it reads data/narration/<id>/progress.json
+// (written after each file by scripts/narrate-pack.mjs) and
+// falls back to counting WAV files on disk when it is absent,
+// so a run survives leaving the page and its status is
+// readable on return by draft/pack id. A `section` of
+// "<day>-<kind>" (e.g. monday-adult) narrates one section
+// only, passed through as --section. Spanish packs are
+// refused here, before the script runs, with the plain
+// reason: the voice model has no Spanish pronunciation guide.
 
 const ROOT = process.cwd();
-const DRAFTS = path.join(ROOT, "data", "drafts");
-const NARRATION = path.join(ROOT, "data", "narration");
 
-function isDraftId(id) {
-  return /^job-[0-9a-f]{16}$/.test(String(id ?? ""));
-}
-
-function runScript(packPath, outDir, voice) {
-  return new Promise((resolve) => {
-    execFile(
-      process.execPath,
-      ["scripts/narrate-pack.mjs", packPath, outDir, "--voice", voice],
-      { cwd: ROOT, timeout: 20 * 60 * 1000, maxBuffer: 10 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        resolve({ error, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
-      }
-    );
-  });
+function session() {
+  return cookies().then((store) => verifySession(store.get("flockpath_session")?.value));
 }
 
 export async function GET(request) {
-  // Lists the narration already made for a draft, so the
-  // review page can show the players again without
-  // re-narrating. Same ownership check as the POST.
-  const store = await cookies();
-  const s = verifySession(store.get("flockpath_session")?.value);
+  const s = await session();
   if (!s) return Response.json({ ok: false, error: "Sign in first." }, { status: 401 });
-  const draftId = new URL(request.url).searchParams.get("draftId");
-  if (!isDraftId(draftId)) return Response.json({ ok: false, error: "Unknown draft." }, { status: 400 });
-  const draftPath = path.join(DRAFTS, `${draftId}.json`);
-  if (!existsSync(draftPath)) return Response.json({ ok: false, error: "Unknown draft." }, { status: 404 });
-  try {
-    const stored = JSON.parse(readFileSync(draftPath, "utf-8"));
-    if (stored.email !== s.email) return Response.json({ ok: false, error: "This draft belongs to another account." }, { status: 403 });
-  } catch {
-    return Response.json({ ok: false, error: "This draft could not be read." }, { status: 400 });
-  }
-  const manifestPath = path.join(NARRATION, draftId, "manifest.json");
-  if (!existsSync(manifestPath)) return Response.json({ ok: true, draftId, files: [] });
-  try {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    return Response.json({ ok: true, draftId, voice: manifest.voice, files: manifest.files ?? [] });
-  } catch {
-    return Response.json({ ok: true, draftId, files: [] });
-  }
+  const params = new URL(request.url).searchParams;
+  const id = params.get("draftId") || params.get("packId") || params.get("id");
+  if (!isNarrationId(id)) return Response.json({ ok: false, error: "Unknown draft or pack." }, { status: 400 });
+  const source = resolveNarrationSource(id, s.email);
+  if (!source) return Response.json({ ok: false, error: "Unknown draft or pack." }, { status: 404 });
+  const status = narrationStatus(id);
+  return Response.json({
+    ok: true, id, draftId: source.kind === "draft" ? id : undefined, packId: source.kind === "pack" ? id : undefined,
+    kind: source.kind, title: source.title, date: source.date, language: source.language,
+    days: source.days, voice: status.voice, files: status.files,
+    status: status.state, done: status.done, total: status.total,
+    current: status.current, startedAt: status.startedAt, error: status.error,
+    totalSeconds: status.totalSeconds,
+  });
 }
 
 export async function POST(request) {
-  const store = await cookies();
-  const s = verifySession(store.get("flockpath_session")?.value);
+  const s = await session();
   if (!s) return Response.json({ ok: false, error: "Sign in first." }, { status: 401 });
   const body = await request.json().catch(() => ({}));
-  const draftId = body.draftId;
-  if (!isDraftId(draftId)) return Response.json({ ok: false, error: "Unknown draft." }, { status: 400 });
-  const draftPath = path.join(DRAFTS, `${draftId}.json`);
-  if (!existsSync(draftPath)) return Response.json({ ok: false, error: "Unknown draft." }, { status: 404 });
-  let stored;
-  try {
-    stored = JSON.parse(readFileSync(draftPath, "utf-8"));
-  } catch {
-    return Response.json({ ok: false, error: "This draft could not be read." }, { status: 400 });
-  }
-  if (stored.email !== s.email) return Response.json({ ok: false, error: "This draft belongs to another account." }, { status: 403 });
-  const pack = stored.draft;
+  const id = body.draftId || body.packId || body.id;
+  if (!isNarrationId(id)) return Response.json({ ok: false, error: "Unknown draft or pack." }, { status: 400 });
+  const source = resolveNarrationSource(id, s.email);
+  if (!source) return Response.json({ ok: false, error: "Unknown draft or pack." }, { status: 404 });
+  const pack = source.pack;
   if (!pack || !Array.isArray(pack.adultDevotionals) || !pack.adultDevotionals.length) {
-    return Response.json({ ok: false, error: "This draft has nothing to narrate yet." }, { status: 400 });
+    return Response.json({ ok: false, error: "This pack has nothing to narrate yet." }, { status: 400 });
   }
-  if (String(pack.language ?? "en").toLowerCase() === "es") {
+  if (source.language === "es") {
     return Response.json({ ok: false, error: "Spanish narration is not available yet: the voice model has no Spanish pronunciation guide, so Spanish words would come out wrong. English packs narrate today." }, { status: 400 });
   }
-  const pastor = getPastor(s.email);
-  const voice = pastor?.narrationVoice || "af_heart";
-  const outDir = path.join(NARRATION, draftId);
+  let section = null;
+  if (body.section !== undefined && body.section !== null && String(body.section).trim() !== "") {
+    section = parseSection(body.section);
+    if (!section) return Response.json({ ok: false, error: "Unknown narration section. Pick one day, adult or kid." }, { status: 400 });
+    const dayRow = source.days.find((d) => d.day === section.day);
+    if (!dayRow || (section.kind === "kid" && !dayRow.hasKid)) {
+      return Response.json({ ok: false, error: `This pack has no ${section.label} section to narrate.` }, { status: 400 });
+    }
+  }
+  const outDir = narrationDir(id);
   mkdirSync(outDir, { recursive: true });
+  // A run already in progress keeps the job: starting a
+  // second render over it would write the same files twice.
+  // The UI polls the running job instead; a finished or
+  // failed run clears the way for a re-narration.
+  const current = narrationStatus(id);
+  if (current.state === "running") {
+    return Response.json({ ok: false, error: `Narration is already running for this pack${current.current ? ` (${current.current})` : ""}. Wait for it to finish, then try again.`, jobId: id, status: "running", done: current.done, total: current.total }, { status: 409 });
+  }
+  const pastor = getPastor(s.email);
+  // Nov 21, 2026, v62: fallback is the Liam+Echo blend, the
+  // default; getPastor already returns a stored voice for
+  // an existing account, so this only fires when there is
+  // no stored voice at all.
+  const voice = pastor?.narrationVoice || "am_liam_echo";
+  const total = section ? 1 : pack.adultDevotionals.length + (pack.kidDevotionals ?? []).filter(Boolean).length;
   const tmpPack = path.join(outDir, ".pack.json");
   writeFileSync(tmpPack, JSON.stringify(pack));
-  const { error, stdout, stderr } = await runScript(tmpPack, outDir, voice);
-  try { unlinkSync(tmpPack); } catch {}
-  if (error) {
-    const detail = (stderr || stdout || error.message || "").slice(-500);
-    return Response.json({ ok: false, error: `Narration failed: ${detail}` }, { status: 500 });
+  // The progress file lands BEFORE the child starts, so the
+  // first poll already sees a running job with its total.
+  // The engine overwrites it after each file lands, with
+  // {status, done, total, current, startedAt, error}.
+  writeFileSync(path.join(outDir, "progress.json"), JSON.stringify({
+    status: "running", done: 0, total, current: section ? section.label : null,
+    startedAt: new Date().toISOString(), error: null,
+  }, null, 1));
+  const args = ["scripts/narrate-pack.mjs", tmpPack, outDir, "--voice", voice];
+  if (section) args.push("--section", `${section.file.replace(/\.wav$/, "")}`);
+  let child;
+  try {
+    child = spawn(process.execPath, args, { cwd: ROOT, detached: true, stdio: "ignore" });
+    child.unref();
+  } catch (e) {
+    writeFileSync(path.join(outDir, "progress.json"), JSON.stringify({
+      status: "error", done: 0, total, current: null,
+      startedAt: new Date().toISOString(), error: plainNarrationError(e.message),
+    }, null, 1));
+    return Response.json({ ok: false, error: "Narration could not start. Try again." }, { status: 500 });
   }
-  let manifest = null;
-  try { manifest = JSON.parse(readFileSync(path.join(outDir, "manifest.json"), "utf-8")); } catch {}
-  const files = (manifest?.files ?? []).map((f) => ({ day: f.day, kind: f.kind, file: f.file, seconds: f.seconds }));
-  if (!files.length) {
-    // Fall back to the files on disk if the manifest was not written.
-    const onDisk = readdirSync(outDir).filter((n) => n.endsWith(".wav")).sort();
-    if (!onDisk.length) return Response.json({ ok: false, error: "Narration finished but wrote no audio." }, { status: 500 });
-    return Response.json({ ok: true, draftId, voice, files: onDisk.map((n) => ({ file: n })) });
-  }
-  return Response.json({ ok: true, draftId, voice, files, manifest });
+  // The child owns the run from here: it writes progress.json
+  // after each file and "done" (or "error", with the plain
+  // reason) at the end. This request returns now.
+  return Response.json({ ok: true, jobId: id, id, kind: source.kind, status: "running", total, section: section ? section.label : null, voice });
 }

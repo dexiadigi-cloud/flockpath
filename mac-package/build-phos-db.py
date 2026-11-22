@@ -3,11 +3,22 @@
 
 Copies only the tables the Flockpath app actually queries
 (sources, crossrefs, commentaries, interlinear_words, lexicon,
-devotionals, dictionaries) from the full study.db, with their
+devotionals, dictionaries, plus the Viz.Bible tables places,
+place_verses, proper_names, proper_name_verses,
+morphology_codes_hebrew, morphology_codes_greek,
+topics_openbible) from the full study.db, with their
 schema and indexes, then vacuums. The app reads this file as
 data/phos.db, so the Mac package never needs the full Phos
 database or the VM's workspace path.
 
+TABLES must match scripts/build_bundle_vizbible.py TABLES
+exactly (14 tables, Nov 19, 2026 Viz.Bible rebuild).
+Rashi exclusion (Nov 18 user decision, mirrored from the
+working builder): Rashi on Genesis (source_id rashi_genesis,
+1,027 commentary rows, sensitivity "context-only") is NOT in
+any Flockpath bundle, so commentaries and sources are copied
+with WHERE source_id != 'rashi_genesis' and their row counts
+are checked against full-minus-Rashi, not full.
 Usage: python3 mac-package/build-phos-db.py [output-path]
 Default output: output/mac-packages/phos.db
 Re-measuring note (Nov 3, 2026): the trimmed file must be
@@ -20,7 +31,10 @@ import sys
 from pathlib import Path
 
 TABLES = ["sources", "crossrefs", "commentaries",
-          "interlinear_words", "lexicon", "devotionals", "dictionaries"]
+          "interlinear_words", "lexicon", "devotionals", "dictionaries",
+          "places", "place_verses", "proper_names", "proper_name_verses",
+          "morphology_codes_hebrew", "morphology_codes_greek",
+          "topics_openbible"]
 SRC = Path.home() / "workspace" / "scripture-desk" / "data" / "study.db"
 DST = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("output/mac-packages/phos.db")
 
@@ -49,7 +63,12 @@ for typ, name, sql in schema:
         if owner and owner[0] in TABLES:
             dst.execute(sql)
 for table in TABLES:
-    dst.execute(f"INSERT INTO {table} SELECT * FROM src.{table}")
+    if table in ("commentaries", "sources"):
+        dst.execute(
+            f"INSERT INTO {table} SELECT * FROM src.{table} "
+            "WHERE source_id != 'rashi_genesis'")
+    else:
+        dst.execute(f"INSERT INTO {table} SELECT * FROM src.{table}")
 dst.commit()
 dst.execute("VACUUM")
 dst.commit()
@@ -57,9 +76,16 @@ print("tables:", ", ".join(kept))
 for table in TABLES:
     full = src.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     trim = dst.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    status = "OK" if full == trim else "MISMATCH"
-    print(f"{table}: full={full} trimmed={trim} {status}")
-    assert full == trim, f"row count mismatch on {table}"
+    if table in ("commentaries", "sources"):
+        rashi = src.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            "WHERE source_id = 'rashi_genesis'").fetchone()[0]
+        want = full - rashi
+    else:
+        want = full
+    status = "OK" if trim == want else "MISMATCH"
+    print(f"{table}: full={full} trimmed={trim} want={want} {status}")
+    assert trim == want, f"row count mismatch on {table}"
 integrity = dst.execute("PRAGMA integrity_check").fetchone()[0]
 print("integrity:", integrity)
 assert integrity == "ok"

@@ -896,6 +896,114 @@ def drop_note_fragment(part):
         return True
     return not _p[0].isupper()
 
+
+def collapse_repeated_sentences(text):
+    """Drop near-verbatim repeated sentences and clauses within one day section.
+
+    Nov 20, 2026, v62 (item 4a): the v61 Power of the Cross pack
+    restated "its death paid sin's price" verbatim 3x across
+    Wednesday's adult paragraphs, spilling the day onto a second
+    page. The v39 prompt instruction (later fields see earlier
+    paragraphs) did not stop it, and the per-field checks only
+    see one field at a time, so the guard runs here, on the
+    assembled section, after the fields are joined. Two levels:
+    (1) a whole sentence whose normalized form matches an earlier
+    sentence exactly, or whose word set is at least 85% the same
+    as an earlier sentence of 6+ words, is dropped; (2) a clause
+    (a comma/semicolon segment of 5+ words) whose normalized form
+    matches an earlier clause is dropped from its sentence, so
+    the rest of the sentence survives -- this is the level the
+    v61 defect actually sits at, since the repeated phrase was
+    a clause inside three otherwise different sentences. Short
+    units are never dropped: sentences under 4 words and clauses
+    under 5 words are refrains or connective tissue, not
+    restatement. The first occurrence is always kept; only later
+    copies are dropped. Paragraphs that empty out are removed.
+    Returns (collapsed_text, dropped_count). Module-level so the
+    proof can import it directly, like the other helpers above.
+    """
+    if not text:
+        return text, 0
+
+    def _norm(s):
+        return " ".join(re.sub(r"[^a-z0-9 ]", "", _fold(s.lower())).split())
+
+    def _clause_key(s):
+        # Leading conjunctions do not make a clause new:
+        # "and its death paid sin's price" is the same clause
+        # as "its death paid sin's price".
+        words = _norm(s).split()
+        while words and words[0] in ("and", "but", "so", "then"):
+            words = words[1:]
+        return " ".join(words)
+
+    dropped = 0
+    out_paras = []
+    seen_sentences = []  # (normalized string, word set)
+    seen_clauses = set()
+    for para in str(text).split("\n\n"):
+        # Split on sentence ends, keeping the terminator with
+        # its sentence. Abbreviations are rare in this prose;
+        # a split inside one is a dropped-sentence risk only
+        # when the same fragment repeats, which the 4-word
+        # floor already guards.
+        parts = re.split(r"(?<=[.!?])\s+", para.strip())
+        kept_sentences = []
+        for s in parts:
+            s = s.strip()
+            if not s:
+                continue
+            norm = _norm(s)
+            words = norm.split()
+            if len(words) >= 4:
+                wset = set(words)
+                is_repeat = False
+                for prev_norm, prev_set in seen_sentences:
+                    if norm == prev_norm:
+                        is_repeat = True
+                        break
+                    if len(words) >= 6 and len(prev_set) >= 6:
+                        inter = len(wset & prev_set)
+                        union = len(wset | prev_set)
+                        if union and inter / union >= 0.85:
+                            is_repeat = True
+                            break
+                if is_repeat:
+                    dropped += 1
+                    continue
+                seen_sentences.append((norm, wset))
+            # Clause level: split the kept sentence on commas
+            # and semicolons, drop a repeated clause of 5+
+            # words, rejoin what is left. The sentence
+            # terminator is held aside first, so a dropped
+            # final clause cannot take the period with it.
+            term = ""
+            if s and s[-1] in ".!?":
+                term, s = s[-1], s[:-1].rstrip()
+            segments = re.split(r"([,;])", s)
+            # segments alternate text, separator, text...
+            kept_segments = []
+            for i in range(0, len(segments), 2):
+                seg = segments[i].strip()
+                if not seg:
+                    continue
+                key = _clause_key(seg)
+                if len(key.split()) >= 5:
+                    if key in seen_clauses:
+                        dropped += 1
+                        continue
+                    seen_clauses.add(key)
+                kept_segments.append(seg)
+            if kept_segments:
+                joined = ", ".join(kept_segments)
+                # A dropped middle clause can leave a doubled
+                # space or a stray comma before the terminator;
+                # the rejoin above already rebuilds it cleanly.
+                kept_sentences.append(joined + term)
+        if kept_sentences:
+            out_paras.append(" ".join(kept_sentences))
+    return "\n\n".join(out_paras), dropped
+
 # v25 (Nov 5, 2026, Jeremiah-approved round-6 fix): the
 # negation self-check and the shared verbatim helper. The
 # Nov 5 Powers of God pack proved two gaps: an adult body
@@ -1213,10 +1321,29 @@ def main():
     # Step 7.5 Phase B: Phos context bundle, if given. Map ref -> bundle entry.
     phos = {}
     phos_devotionals = []
+    phos_places = []
+    phos_topics = []
+    phos_topic = ""
     if phos_path:
         bundle = json.loads(Path(phos_path).read_text(encoding="utf-8"))
         phos = {v["reference"]: v for v in bundle.get("verses", [])}
         phos_devotionals = bundle.get("devotionals", [])
+        # Nov 19, 2026, Viz.Bible Phase 1: places ride the bundle
+        # only when phos_context.py ran with --places. No places
+        # field in the bundle means no placesNote in the draft,
+        # so default packs are byte-identical to before.
+        phos_places = bundle.get("places", [])[:3]
+        # Nov 19, 2026, Viz.Bible Phase 2: names ride the bundle
+        # only when phos_context.py ran with --names. No names
+        # field in the bundle means no namesNote in the draft,
+        # so default packs are byte-identical to before.
+        phos_names = bundle.get("names", [])[:3]
+        # Nov 19, 2026, Viz.Bible Phase 3: topic verses ride the
+        # bundle only when phos_context.py ran with --topics <topic>.
+        # No topics field in the bundle means no topicsNote in the
+        # draft, so default packs are byte-identical to before.
+        phos_topics = bundle.get("topics", [])[:3]
+        phos_topic = bundle.get("topics_topic", "")
 
     # Oct 31, 2026, meat expansion: use the FULL Phos bundle,
     # not the shallow first-only pass. Before this, only
@@ -1760,6 +1887,46 @@ def main():
             return ("esta semana" in low) or bool(set(low.split()) & ACTION_WORDS)
         return ("this week" in low) or bool(set(low.split()) & ACTION_WORDS)
 
+    def _trim_note_to_band(note, max_words=70):
+        # Nov 19, 2026, v60 fixes: cut a leaderNote to the
+        # 40-70 word band without ever breaking a word or a
+        # sentence. The prompt already says 40-70 and the
+        # quality gate already warns outside it, but the model
+        # still writes 70-83 words and a warning never stops
+        # the pack, so the leader page spills. Sentences are
+        # kept whole; when a note runs long, middle sentences
+        # go first, so the opening answer and the closing
+        # follow-up question survive. The "(Read ...)"
+        # directive is appended after normalize and the gate
+        # strips it before counting, so it does not count
+        # against the band.
+        words = (note or "").split()
+        if len(words) <= max_words:
+            return note
+        sents = re.split(r"(?<=[.!?])\s+", (note or "").strip())
+        if len(sents) <= 1:
+            cut = " ".join(words[:max_words])
+            return cut.rstrip(",;:") + "\u2026"
+        last = sents[-1]
+        last_is_question = last.rstrip().endswith("?")
+        budget = max_words - (len(last.split()) if last_is_question else 0)
+        kept = []
+        kept_words = 0
+        for s in (sents[:-1] if last_is_question else sents):
+            sw = len(s.split())
+            if kept_words + sw <= budget:
+                kept.append(s)
+                kept_words += sw
+            else:
+                break
+        if last_is_question and kept_words + len(last.split()) <= max_words:
+            kept.append(last)
+        out = " ".join(kept).strip()
+        if out:
+            return out
+        cut = " ".join(words[:max_words])
+        return cut.rstrip(",;:") + "\u2026"
+
     def normalize(parsed):
         if isinstance(parsed, dict):
             parts = [parsed.get(k) for k in ("bodySays", "bodyMeans", "bodyToday", "bodyClosing")]
@@ -1783,6 +1950,12 @@ def main():
                             s += end
                         return s
                     q["leaderNote"] = " ".join(p for p in (_punct(q.get("goodAnswer"), "."), _punct(q.get("textPoint"), "."), _punct(q.get("followUp"), "?")) if p and not drop_note_fragment(p))
+                    # Nov 19, 2026, v60 fixes: enforce the
+                    # 40-70 word band here, in code. The prompt
+                    # says it and the gate warns on it, but the
+                    # model still writes 70-83 words, and the
+                    # leader page spills onto a tenth page.
+                    q["leaderNote"] = _trim_note_to_band(q["leaderNote"])
                     for k in ("goodAnswer", "textPoint", "followUp"):
                         q.pop(k, None)
         return parsed
@@ -2444,6 +2617,18 @@ def main():
                 lines.append("No cites el versículo en el párrafo.")
             else:
                 lines.append("Do not quote the verse in the paragraph.")
+            # Nov 20, 2026, v62 (item 4a): the v61 Wednesday
+            # restatement ("its death paid sin's price" 3x
+            # verbatim) survived the v39 previous-paragraph
+            # context, so the instruction is now explicit:
+            # one statement per idea per day. The code
+            # guard (collapse_repeated_sentences, on the
+            # assembled body) is the backstop; this line is
+            # the first try.
+            if LANG == "es":
+                lines.append("Di cada idea una sola vez en la sección de este día: no repitas la misma frase en otro párrafo de este día.")
+            else:
+                lines.append("State each idea once in this day's section: do not repeat the same sentence in another paragraph of this day.")
             if include_title:
                 if LANG == "es":
                     lines.append("Da también un título corto para este día, de 2-6 palabras, sobre este versículo.")
@@ -2895,6 +3080,15 @@ def main():
                 title = ref
                 print(f"Adult {day} title fallback to verse reference {ref}, needs pastor title edit.")
             body = "\n\n".join(fields[k] for k in ("bodySays", "bodyMeans", "bodyToday", "bodyClosing") if fields.get(k))
+            # Nov 20, 2026, v62 (item 4a): the v61 Wednesday
+            # restatement ran across paragraphs, so no
+            # per-field check could see it. Collapse
+            # near-verbatim repeated sentences in the
+            # assembled body before anything else builds
+            # on it (prayer, kid retelling, leader notes).
+            body, _n_dropped = collapse_repeated_sentences(body)
+            if _n_dropped:
+                print(f"Adult {day} repetition guard: dropped {_n_dropped} repeated sentence{'s' if _n_dropped != 1 else ''}.")
             a = {"day": day, "title": title, "scripture": {"reference": ref}, "body": body}
                         # Nov 1, 2026, v11, user-approved: prayer is a
             # separate call, not the last field of the body
@@ -3160,6 +3354,18 @@ def main():
                         f"Relato para niños de este versículo: {k_ret.get('retelling', '')}",
                         "Da un título diferente al título para adultos de este día, no lo repitas.",
                         f"Título: 2-6 palabras, palabras sencillas que un niño conoce, sobre el versículo de arriba, {_verse_word_line}",
+                        # Nov 20, 2026, v62 (item 4b): the v61
+                        # "When All God's People Strays" error.
+                        # There is no grammar checker in this
+                        # codebase (no NLP library, and the
+                        # kid_title_issue code check covers
+                        # banned words, verse-word overlap,
+                        # and adult-duplicate only), so the
+                        # lever here is a prompt rule, not a
+                        # code fix. A model slip can still
+                        # occur; the review page is the
+                        # backstop, as before.
+                        "Revisa la concordancia entre sujeto y verbo: un sujeto plural lleva un verbo en plural.",
                         'Forma JSON: {"title": "..."}',
                     ])
                 else:
@@ -3173,6 +3379,18 @@ def main():
                         # checks duplicate after, with a['title'].
                         "Give a title different from the adult title for this day, do not reuse it.",
                         f"Title: 2-6 words, simple words a child knows, about the verse above, {_verse_word_line}",
+                        # Nov 20, 2026, v62 (item 4b): the v61
+                        # "When All God's People Strays" error.
+                        # There is no grammar checker in this
+                        # codebase (no NLP library, and the
+                        # kid_title_issue code check covers
+                        # banned words, verse-word overlap,
+                        # and adult-duplicate only), so the
+                        # lever here is a prompt rule, not a
+                        # code fix. A model slip can still
+                        # occur; the review page is the
+                        # backstop, as before.
+                        "Check subject-verb agreement: a plural subject takes a plural verb (for example, 'people' goes with 'stray', not 'strays').",
                         'JSON shape: {"title": "..."}',
                     ])
                 if title_attempt > 0:
@@ -3210,7 +3428,17 @@ def main():
             if not kid_title:
                 kid_title = ref
                 print(f"Kid title fallback to verse reference {ref}, needs pastor title edit.")
-            k = {"day": day, "title": kid_title, "retelling": k_ret.get("retelling", ""), "activity": k_ret.get("activity", "")}
+            # Nov 20, 2026, v62 (item 4a): same repetition
+            # guard as the adult body above. The kid
+            # retelling already rejects a repeated sentence
+            # within its own call, but a retelling built
+            # from an adult body that restated itself can
+            # still carry the repeat; collapse it here
+            # before the day is checkpointed.
+            _k_retelling, _k_dropped = collapse_repeated_sentences(k_ret.get("retelling", ""))
+            if _k_dropped:
+                print(f"Kid {day} repetition guard: dropped {_k_dropped} repeated sentence{'s' if _k_dropped != 1 else ''}.")
+            k = {"day": day, "title": kid_title, "retelling": _k_retelling, "activity": k_ret.get("activity", "")}
             checkpoint.setdefault("kid", {})[day] = k
             save_checkpoint()
         kid.append(k)
@@ -3644,6 +3872,77 @@ def main():
         draft["doctrinalWarnings"] = doctrinal_warnings
     if phos_devotionals:
         draft["classicDevotional"] = phos_devotionals[0]
+    # Nov 19, 2026, Viz.Bible Phase 1: the places note is
+    # leader-page metadata only, never prompt input. It is
+    # carried exactly as the bundle built it (cap 3 per pack,
+    # already applied in phos_context.py), with the CC BY 4.0
+    # source line, so the PDF leader page can print it and
+    # the review page can drop it with its toggle. No places
+    # in the bundle means no placesNote field at all.
+    if phos_places:
+        draft["placesNote"] = {
+            "places": [{
+                "name": p["name"],
+                "modern_name": p.get("modern_name"),
+                "confidence": p["confidence"],
+                "verse": p["verse"],
+            } for p in phos_places],
+            "source": "Place data courtesy of OpenBible.info, "
+                      "licensed under CC BY 4.0.",
+        }
+    # Nov 19, 2026, Viz.Bible Phase 2: the names note is
+    # leader-page metadata only, never prompt input. One line per
+    # name: the Hitchcock meaning first (public domain), then one
+    # TIPNR family link as cross-check ("sibling of Moses"), then
+    # the verse where the name occurs. No AI description text is
+    # carried anywhere: TIPNR's brief / short / article
+    # descriptions were never ingested. No names in the bundle
+    # means no namesNote field at all.
+    if phos_names:
+        def _family_note(name):
+            links = name.get("family_links") or {}
+            # One link only, most recognisable first: a sibling,
+            # then a parent, a partner, a child, a founder.
+            for key, label in (
+                    ("siblings", "sibling of"),
+                    ("parents", "child of"),
+                    ("partners", "partner of"),
+                    ("offspring", "parent of"),
+                    ("founder", "founded by")):
+                vals = links.get(key) or []
+                if vals:
+                    other = str(vals[0]).split("@", 1)[0]
+                    return f"{label} {other}"
+            return None
+
+        draft["namesNote"] = {
+            "names": [{
+                "name": n["name"],
+                "kind": n["kind"],
+                "meaning": n.get("meaning"),
+                "family_note": _family_note(n),
+                "verse": n["verse"],
+            } for n in phos_names],
+            "source": "Proper names: STEP Bible (www.STEPBible.org), "
+                      "CC BY 4.0.",
+        }
+    # Nov 19, 2026, Viz.Bible Phase 3: the topics note is
+    # leader-page metadata only, never prompt input. Up to 3
+    # supporting verses for the pastor-picked topic, each with its
+    # BSB text from the bundle (never ESV text from OpenBible),
+    # as discussion pointers on the leader page. Topic packs only:
+    # the adult devotional still starts from the week's passage,
+    # never from this list. No topics in the bundle means no
+    # topicsNote field at all.
+    if phos_topics:
+        draft["topicsNote"] = {
+            "topic": phos_topic,
+            "verses": [{
+                "verse": v["verse_ref"],
+                "text": v["text"],
+            } for v in phos_topics],
+            "source": "Topical data: OpenBible.info (CC BY 4.0).",
+        }
     # Nov 2, 2026, denomination labels: carry the bundle's voices
     # as metadata so review can show them labeled and the PDF
     # leader page can list them. Metadata only: no generated

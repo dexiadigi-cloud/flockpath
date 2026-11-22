@@ -34,8 +34,14 @@ const MEMBER_STAGES = [
   { key: "print", label: "Print" },
 ];
 
-export default function JourneyStrip({ stage, member }) {
-  const STAGES = member ? MEMBER_STAGES : PASTOR_STAGES;
+// Nov 20, 2026, v62 (item 1): the strip takes optional translated
+// labels (journey.* keys). Callers that know the app language pass
+// them; callers that do not keep the English defaults.
+export default function JourneyStrip({ stage, member, labels }) {
+  const STAGES = (member ? MEMBER_STAGES : PASTOR_STAGES).map((s) => ({
+    ...s,
+    label: labels?.[s.key] ?? s.label,
+  }));
   const current = Math.max(0, STAGES.findIndex((s) => s.key === stage));
   return (
     <div className="fp-steps" aria-label="Pack journey">

@@ -171,8 +171,23 @@ def main():
     tradition_arg = []
     if plan.get("denomination"):
         tradition_arg = ["--tradition", str(plan["denomination"])]
+    # Nov 19, 2026, v60 fixes: the Phos bundle carries the
+    # leader-page background notes, so a real pack gets them
+    # without a second pass. --places and --names ride every
+    # pack (passage-derived, capped, leader-page only, and
+    # the pastor drops either in review with its toggle).
+    # --topics rides when the plan carries topics, taking
+    # the first topic as the note's topic, with --translation
+    # so the topic verses come from the pack's own store
+    # (rv1909 / spabes for a Spanish pack, never BSB text
+    # in a Spanish note). Without topics the bundle is
+    # unchanged: no topics field, no topics note.
+    phos_flags = ["--places", "--names"]
+    plan_topics = plan.get("topics") or []
+    if plan_topics:
+        phos_flags += ["--topics", str(plan_topics[0]), "--translation", translation]
     try:
-        run(["python3", "scripts/phos_context.py", ",".join(refs), str(phos_path)] + tradition_arg)
+        run(["python3", "scripts/phos_context.py", ",".join(refs), str(phos_path)] + tradition_arg + phos_flags)
         phos_arg = [str(phos_path)]
     except subprocess.CalledProcessError:
         print("Phos bundle failed for this passage, continuing without it. Verse text is still in the prompt, quotes are still store-filled.")

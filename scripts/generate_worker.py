@@ -127,7 +127,16 @@ def all_jobs():
     if not JOBS.exists():
         return jobs
     for path in sorted(JOBS.glob("*.json")):
+        # A job directory holds three kinds of file: <id>.json
+        # (the job), <id>-plan.json (its plan), and
+        # <id>-progress.json (the pipeline's step display).
+        # Only the first is a job record: plan and progress
+        # files carry no "id" key, so loading them here used
+        # to crash the --job lookup with KeyError 'id' the
+        # moment any progress file existed (Nov 18, 2026).
         if path.name.endswith("-plan.json"):
+            continue
+        if path.name.endswith("-progress.json"):
             continue
         try:
             jobs.append((path, load_job(path)))

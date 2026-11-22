@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { verifySession, loadLibrary, saveToLibrary } from "../../../lib/auth.mjs";
 import { lockPack } from "../../../lib/pack.mjs";
+import { copyNarration } from "../../../lib/narration.mjs";
 
 async function session() {
   const store = await cookies();
@@ -65,5 +66,14 @@ export async function POST(request) {
     pack: verified.pack,
   };
   saveToLibrary(entry);
+  // Nov 20, 2026, v62, item 12: narration carries over to
+  // the pack at approval. The pack id is the draft job id,
+  // so the audio already lives under data/narration/<packId>/
+  // and this copy is a no-op today; it guards any future id
+  // change. The draft JSON delete in the review page never
+  // touches data/narration/, and the narration routes now
+  // accept a library pack as the owner, so the audio stays
+  // reachable on the pack page after approval.
+  copyNarration(body.id, verified.pack.id);
   return Response.json({ ok: true, entry });
 }
